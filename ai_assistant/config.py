@@ -81,6 +81,18 @@ class AppConfig:
     auto_summarize_on_exit: bool = field(
         default_factory=lambda: os.getenv("AUTO_SUMMARIZE_ON_EXIT", "true").lower() in ("true", "1", "yes")
     )
+    embedding_provider: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "ollama")
+    )
+    embedding_model: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+    )
+    embedding_dim: int = field(
+        default_factory=lambda: int(os.getenv("EMBEDDING_DIM", "768"))
+    )
+    rrf_k: int = field(
+        default_factory=lambda: int(os.getenv("RRF_K", "60"))
+    )
 
 
 # Global singleton configuration

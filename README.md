@@ -39,11 +39,17 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - Sub-millisecond exact-term matching for code snippets (e.g. `def calculate_fibonacci(n):`), dates (`2026-09-24`), technical keywords, and filenames (`config.py`).
   - Automatic query sanitization, BM25 relevance ranking, and contextual match snippet extraction.
   - Structured transcript retrieval (`load_session_transcript`) restoring full conversational dialogue turns once a session is identified.
+- **Semantic & Hybrid Search with sqlite-vec + Reciprocal Rank Fusion (Phase 5)**:
+  - **Local Embedder**: Generates 768-dimensional vector representations of session summaries upon completion using local Ollama (`nomic-embed-text`).
+  - **`sqlite-vec` Vector Storage**: Summary vectors are indexed in the `sessions_vec` virtual table (`vec0`) using cosine distance.
+  - **Reciprocal Rank Fusion (RRF)**: Combines FTS5 lexical signals and `sqlite-vec` cosine similarity into the unified `search_hybrid` engine ($k=60$).
+  - **Benchmark Suite**: Compare retrieval accuracy for vague thematic queries vs. specific keywords (`python -m benchmarks.benchmark_search`).
 - **Interactive Slash Commands**:
   - `/summarize` - Generate 2-sentence summary and title for current session
   - `/sessions [limit]` - List past archived sessions with message counts and summary snippets
   - `/session` - Display details and metadata of active session
   - `/search <query>` - Exact-term & keyword search across past messages (FTS5)
+  - `/hybrid <query>` - Semantic & Hybrid Search combining FTS5 and sqlite-vec (RRF)
   - `/transcript [id]` - View full dialogue transcript for an identified session
   - `/new [title]` - Start a fresh session with clean context
   - `/compress [on|off|stats]` - Toggle or inspect Headroom context compression
@@ -55,7 +61,7 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - `/clear` - Reset conversation history while preserving system prompt
   - `/system [prompt]` - View or modify pinned system prompt directly
   - `/help` - Show command reference
-  - `/exit` or `/quit` - Quit session (auto-summarizes unless empty)
+  - `/exit` or `/quit` - Quit session (auto-summarizes & vector indexes unless empty)
 
 ---
 

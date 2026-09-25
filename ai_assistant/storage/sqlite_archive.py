@@ -44,9 +44,11 @@ class MessageRecord:
 class SQLiteArchive:
     """Relational SQLite storage manager for chat sessions and conversational history."""
 
-    def __init__(self, db_path: str = "conversations.db"):
+    def __init__(self, db_path: str = "conversations.db", embedding_dim: int = 768):
         self.db_path = db_path
+        self.embedding_dim = embedding_dim
         self._lock = threading.RLock()
+        self._vec_enabled: bool = False
 
         # Ensure parent directory exists if db_path is not in-memory
         if self.db_path != ":memory:":
@@ -66,6 +68,17 @@ class SQLiteArchive:
                 timeout=30.0,
             )
             self._conn.row_factory = sqlite3.Row
+
+            # Attempt loading sqlite-vec extension
+            try:
+                import sqlite_vec
+                self._conn.enable_load_extension(True)
+                sqlite_vec.load(self._conn)
+                self._conn.enable_load_extension(False)
+                self._vec_enabled = True
+            except Exception:
+                self._vec_enabled = False
+
             with self._conn:
                 self._conn.execute("PRAGMA foreign_keys = ON;")
                 if self.db_path != ":memory:":
@@ -168,6 +181,20 @@ class SQLiteArchive:
                         conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild');")
                 except Exception:
                     pass
+
+                # sqlite-vec Virtual Table for Session Summary Semantic Embeddings
+                if getattr(self, "_vec_enabled", False):
+                    try:
+                        conn.execute(
+                            f"""
+                            CREATE VIRTUAL TABLE IF NOT EXISTS sessions_vec USING vec0(
+                                session_id text,
+                                summary_embedding float[{self.embedding_dim}] distance_metric=cosine
+                            );
+                            """
+                        )
+                    except Exception:
+                        pass
 
     def create_session(
         self,
@@ -313,10 +340,15 @@ class SQLiteArchive:
                 return cursor.rowcount > 0
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete session and cascade delete all its messages."""
+        """Delete session and cascade delete all its messages and vector embeddings."""
         with self._lock:
             conn = self._get_connection()
             with conn:
+                if getattr(self, "_vec_enabled", False):
+                    try:
+                        conn.execute("DELETE FROM sessions_vec WHERE session_id = ?", (session_id,))
+                    except Exception:
+                        pass
                 cursor = conn.execute(
                     "DELETE FROM sessions WHERE id = ?",
                     (session_id,),
@@ -548,6 +580,78 @@ class SQLiteArchive:
                 "turns": turns,
                 "formatted_transcript": "\n".join(formatted_lines),
             }
+
+    def has_vec_support(self) -> bool:
+        """Return whether sqlite-vec extension and sessions_vec are active."""
+        return getattr(self, "_vec_enabled", False)
+
+    def store_session_embedding(self, session_id: str, embedding: List[float]) -> bool:
+        """Store or replace session summary vector in sessions_vec virtual table."""
+        if not getattr(self, "_vec_enabled", False):
+            return False
+
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                try:
+                    conn.execute("DELETE FROM sessions_vec WHERE session_id = ?", (session_id,))
+                    conn.execute(
+                        "INSERT INTO sessions_vec(session_id, summary_embedding) VALUES (?, ?)",
+                        (session_id, json.dumps(embedding)),
+                    )
+                    return True
+                except Exception:
+                    return False
+
+    def search_sessions_semantic(
+        self, query_embedding: List[float], limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        KNN semantic search over session summary embeddings using cosine distance.
+
+        Returns list of matched session dictionaries ordered by descending cosine similarity.
+        """
+        if not getattr(self, "_vec_enabled", False):
+            return []
+
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT v.session_id, s.title, s.summary, s.model, s.mode,
+                           s.created_at, s.updated_at, v.distance
+                    FROM sessions_vec v
+                    LEFT JOIN sessions s ON s.id = v.session_id
+                    WHERE v.summary_embedding MATCH ?
+                      AND k = ?
+                    ORDER BY v.distance ASC
+                    """,
+                    (json.dumps(query_embedding), limit),
+                )
+                rows = cursor.fetchall()
+                results = []
+                for r in rows:
+                    dist = float(r["distance"])
+                    # Cosine distance: 0 is exact match, 1 is orthogonal, 2 is opposite
+                    sim = max(0.0, 1.0 - dist)
+                    results.append(
+                        {
+                            "session_id": r["session_id"],
+                            "title": r["title"] or "Untitled Session",
+                            "summary": r["summary"],
+                            "distance": dist,
+                            "similarity": round(sim, 4),
+                            "model": r["model"],
+                            "mode": r["mode"],
+                            "created_at": r["created_at"],
+                            "updated_at": r["updated_at"],
+                        }
+                    )
+                return results
+            except Exception:
+                return []
 
     def close(self) -> None:
         """Close database connection cleanly."""

@@ -75,6 +75,7 @@ class InteractiveCLI:
         table.add_row("/sessions [limit]", "List archived conversation sessions from SQLite")
         table.add_row("/session", "Display metadata and stats for the active session")
         table.add_row("/search <query>", "Exact-term & keyword search across past messages (FTS5)")
+        table.add_row("/hybrid <query>", "Semantic & Hybrid Search combining FTS5 and sqlite-vec (RRF)")
         table.add_row("/transcript [id]", "View full dialogue transcript for an identified session")
         table.add_row("/new [title]", "Start a fresh session and clear in-memory context")
         table.add_row("/models", "List available models with metadata")
@@ -409,6 +410,58 @@ class InteractiveCLI:
         self.console.print(table)
         self.console.print("[dim]Use [bold cyan]/transcript <session_id>[/bold cyan] to view full dialogue.[/dim]\n")
 
+    async def handle_hybrid_command(self, query: str) -> None:
+        """Execute Hybrid Search combining FTS5 lexical matching and sqlite-vec embeddings via RRF."""
+        if not query.strip():
+            self.console.print("[yellow]Usage: /hybrid <conceptual or keyword query>[/yellow]\n")
+            return
+
+        with self.console.status(f"[bold cyan]Performing hybrid RRF search for '{query}'...[/bold cyan]"):
+            results = await self.assistant.search_hybrid(query=query, limit=10)
+
+        if not results:
+            self.console.print(f"[yellow]No hybrid matches found for '{query}'.[/yellow]\n")
+            return
+
+        table = Table(
+            title=f"Hybrid Search Results for '{query}' (RRF Fusion, {len(results)} matches)",
+            box=ROUNDED,
+            header_style="bold cyan",
+        )
+        table.add_column("Session ID", style="cyan", width=16)
+        table.add_column("Session Title", style="bold white", width=22)
+        table.add_column("RRF Score", justify="right", style="bold green", width=11)
+        table.add_column("Lex Rank", justify="center", width=10)
+        table.add_column("Sem Sim", justify="right", width=10)
+        table.add_column("Summary / Snippet", style="white")
+
+        for r in results:
+            lex_str = f"#{r.lexical_rank}" if r.lexical_rank is not None else "[dim]-[/dim]"
+            sim_str = f"{r.cosine_similarity * 100:.1f}%" if r.cosine_similarity is not None else "[dim]-[/dim]"
+            preview = ""
+            if r.matched_snippets:
+                clean_snip = r.matched_snippets[0].replace("[MATCH]", "[bold yellow]").replace("[/MATCH]", "[/bold yellow]")
+                preview = clean_snip.replace("\n", " ")
+            elif r.summary:
+                preview = f"[dim italic]{r.summary}[/dim italic]"
+            else:
+                preview = "[dim](No summary or snippet)[/dim]"
+
+            if len(preview) > 90:
+                preview = preview[:87] + "..."
+
+            table.add_row(
+                r.session_id,
+                r.title,
+                f"{r.rrf_score:.5f}",
+                lex_str,
+                sim_str,
+                preview,
+            )
+
+        self.console.print(table)
+        self.console.print("[dim]Use [bold cyan]/transcript <session_id>[/bold cyan] to inspect full session dialogue.[/dim]\n")
+
     def handle_transcript_command(self, session_id: str) -> None:
         """Display full dialogue transcript for an identified session."""
         target_id = session_id.strip() or self.assistant.current_session.id
@@ -480,6 +533,10 @@ class InteractiveCLI:
 
             elif command == "/search":
                 self.handle_search_command(arg)
+                return True
+
+            elif command in ("/hybrid", "/find"):
+                await self.handle_hybrid_command(arg)
                 return True
 
             elif command in ("/transcript", "/dialogue"):

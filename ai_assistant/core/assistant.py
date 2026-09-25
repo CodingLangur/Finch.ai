@@ -12,11 +12,14 @@ from ..providers.gemini_provider import GeminiProvider
 from ..storage.sqlite_archive import SQLiteArchive, SessionRecord, MessageRecord
 from ..storage.session_summarizer import SessionSummarizer
 from ..storage.search import (
+    HybridSearchResult,
     SearchResult,
     SessionTranscript,
     load_session_transcript,
+    search_hybrid,
     search_keyword,
 )
+from ..embeddings import BaseEmbedder, get_embedder
 
 
 class AssistantMode(str, Enum):
@@ -33,8 +36,10 @@ class AIAssistant:
         provider: Optional[BaseLLMProvider] = None,
         model: Optional[str] = None,
         archive: Optional[SQLiteArchive] = None,
+        embedder: Optional[BaseEmbedder] = None,
     ):
         self.config = config or default_config
+        self.embedder = embedder or get_embedder(self.config)
         if provider:
             self.provider = provider
         elif self.config.provider.lower() == "gemini" and self.config.gemini_api_key:
@@ -69,7 +74,10 @@ class AIAssistant:
         )
 
         # Initialize SQLite Archive & Session Logging
-        self.archive = archive or SQLiteArchive(db_path=self.config.db_path)
+        self.archive = archive or SQLiteArchive(
+            db_path=self.config.db_path,
+            embedding_dim=self.config.embedding_dim,
+        )
         self.summarizer = SessionSummarizer(archive=self.archive, provider=self.provider)
 
         # Create the initial active session in SQLite
@@ -244,7 +252,7 @@ class AIAssistant:
     async def summarize_session(
         self, session_id: Optional[str] = None
     ) -> Tuple[str, str]:
-        """Summarize conversational turns for a session and persist title & 2-sentence summary."""
+        """Summarize conversational turns for a session, persist summary, and generate semantic vector."""
         target_id = session_id or self.current_session.id
         title, summary = await self.summarizer.summarize_session(
             session_id=target_id,
@@ -255,7 +263,46 @@ class AIAssistant:
             updated = self.archive.get_session(target_id)
             if updated:
                 self.current_session = updated
+
+        # Generate and store summary vector embedding upon session completion
+        if summary and self.archive.has_vec_support():
+            try:
+                emb_text = f"{title}: {summary}" if title else summary
+                emb = await self.embedder.embed_text(emb_text)
+                self.archive.store_session_embedding(target_id, emb)
+            except Exception:
+                pass
+
         return title, summary
+
+    async def embed_session_summary(self, session_id: Optional[str] = None) -> bool:
+        """Generate and store embedding for a session's summary in sessions_vec."""
+        target_id = session_id or self.current_session.id
+        sess = self.archive.get_session(target_id)
+        if not sess or not sess.summary:
+            return False
+        emb_text = f"{sess.title}: {sess.summary}" if sess.title else sess.summary
+        emb = await self.embedder.embed_text(emb_text)
+        return self.archive.store_session_embedding(target_id, emb)
+
+    async def search_hybrid(
+        self,
+        query: str,
+        limit: int = 10,
+        k: Optional[int] = None,
+        lexical_weight: float = 1.0,
+        semantic_weight: float = 1.0,
+    ) -> List[HybridSearchResult]:
+        """Execute Hybrid Search using Reciprocal Rank Fusion (RRF)."""
+        return await search_hybrid(
+            query=query,
+            limit=limit,
+            k=k or self.config.rrf_k,
+            lexical_weight=lexical_weight,
+            semantic_weight=semantic_weight,
+            archive=self.archive,
+            embedder=self.embedder,
+        )
 
     def get_current_session(self) -> Optional[SessionRecord]:
         """Fetch the current session record with updated message counts."""

@@ -13,10 +13,7 @@ load_dotenv()
 class AppConfig:
     """Application configuration options."""
     provider: str = field(
-        default_factory=lambda: os.getenv(
-            "DEFAULT_PROVIDER",
-            "gemini" if os.getenv("GEMINI_API_KEY") else "ollama",
-        )
+        default_factory=lambda: os.getenv("DEFAULT_PROVIDER", "ollama")
     )
     gemini_api_key: Optional[str] = field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY")
@@ -30,7 +27,9 @@ class AppConfig:
     default_model: str = field(
         default_factory=lambda: os.getenv(
             "DEFAULT_MODEL",
-            "gemini-2.5-flash" if os.getenv("DEFAULT_PROVIDER") == "gemini" else "Gemma4-26000-ctx:latest"
+            "gemini-2.5-flash"
+            if os.getenv("DEFAULT_PROVIDER", "ollama").lower() == "gemini"
+            else os.getenv("OLLAMA_DEFAULT_MODEL", "Gemma4-26000-ctx:latest"),
         )
     )
 

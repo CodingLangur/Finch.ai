@@ -11,6 +11,12 @@ from ..providers.ollama_provider import OllamaProvider
 from ..providers.gemini_provider import GeminiProvider
 from ..storage.sqlite_archive import SQLiteArchive, SessionRecord, MessageRecord
 from ..storage.session_summarizer import SessionSummarizer
+from ..storage.search import (
+    SearchResult,
+    SessionTranscript,
+    load_session_transcript,
+    search_keyword,
+)
 
 
 class AssistantMode(str, Enum):
@@ -258,6 +264,32 @@ class AIAssistant:
     def list_sessions(self, limit: int = 50, offset: int = 0) -> List[SessionRecord]:
         """Fetch a list of past conversation sessions."""
         return self.archive.list_sessions(limit=limit, offset=offset)
+
+    def search_keyword(
+        self,
+        query: str,
+        session_id: Optional[str] = None,
+        limit: int = 10,
+        exact_match: bool = True,
+    ) -> List[SearchResult]:
+        """Execute lexical FTS5 search across archived messages."""
+        return search_keyword(
+            query=query,
+            session_id=session_id,
+            limit=limit,
+            exact_match=exact_match,
+            archive=self.archive,
+        )
+
+    def load_session_transcript(
+        self, session_id: str, include_system: bool = False
+    ) -> Optional[SessionTranscript]:
+        """Retrieve full dialogue transcript for an identified session."""
+        return load_session_transcript(
+            session_id=session_id,
+            include_system=include_system,
+            archive=self.archive,
+        )
 
     def close(self) -> None:
         """Cleanly close the underlying database connection."""

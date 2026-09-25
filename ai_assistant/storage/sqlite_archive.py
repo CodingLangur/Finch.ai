@@ -116,6 +116,59 @@ class SQLiteArchive:
                     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);"
                 )
 
+                # FTS5 Virtual Table for Fast Lexical Search
+                conn.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                        content,
+                        role,
+                        session_id UNINDEXED,
+                        content='messages',
+                        content_rowid='id'
+                    );
+                    """
+                )
+
+                # FTS5 Automatic Synchronization Triggers
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                        INSERT INTO messages_fts(rowid, content, role, session_id)
+                        VALUES (new.id, new.content, new.role, new.session_id);
+                    END;
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                        INSERT INTO messages_fts(messages_fts, rowid, content, role, session_id)
+                        VALUES('delete', old.id, old.content, old.role, old.session_id);
+                    END;
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+                        INSERT INTO messages_fts(messages_fts, rowid, content, role, session_id)
+                        VALUES('delete', old.id, old.content, old.role, old.session_id);
+                        INSERT INTO messages_fts(rowid, content, role, session_id)
+                        VALUES (new.id, new.content, new.role, new.session_id);
+                    END;
+                    """
+                )
+
+                # Rebuild FTS index if messages already existed before FTS5 table was created
+                try:
+                    c = conn.cursor()
+                    c.execute("SELECT COUNT(*) FROM messages;")
+                    m_cnt = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM messages_fts;")
+                    f_cnt = c.fetchone()[0]
+                    if m_cnt > 0 and f_cnt == 0:
+                        conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild');")
+                except Exception:
+                    pass
+
     def create_session(
         self,
         session_id: Optional[str] = None,
@@ -360,6 +413,141 @@ class SQLiteArchive:
                 (session_id,),
             )
             return cursor.fetchone()[0]
+
+    def rebuild_fts(self) -> None:
+        """Force rebuild of the messages_fts virtual table index."""
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild');")
+
+    def search_messages(
+        self,
+        query: str,
+        session_id: Optional[str] = None,
+        limit: int = 20,
+        exact_match: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute lexical search over archived messages using SQLite FTS5.
+
+        Args:
+            query: Exact term, phrase, code snippet, or keywords to search.
+            session_id: Optional filter for a specific session.
+            limit: Maximum number of matched messages to return.
+            exact_match: When True, treats query as an exact phrase/term.
+        """
+        cleaned = query.strip()
+        if not cleaned:
+            return []
+
+        # Prepare FTS5 formatted query string
+        if exact_match:
+            if (cleaned.startswith('"') and cleaned.endswith('"')) or (
+                cleaned.startswith("'") and cleaned.endswith("'")
+            ):
+                cleaned = cleaned[1:-1].strip()
+            escaped = cleaned.replace('"', '""')
+            fts_query = f'"{escaped}"'
+        else:
+            tokens = [t.strip('"\'') for t in cleaned.split() if t.strip('"\'')]
+            if not tokens:
+                return []
+            sanitized = ['"' + t.replace('"', '""') + '"' for t in tokens]
+            fts_query = " AND ".join(sanitized)
+
+        sql = """
+            SELECT m.id, m.session_id, s.title as session_title, m.role, m.content,
+                   m.thinking, m.tokens, m.timestamp,
+                   snippet(messages_fts, 0, '[MATCH]', '[/MATCH]', '...', 15) as snippet,
+                   bm25(messages_fts) as rank
+            FROM messages_fts
+            JOIN messages m ON m.id = messages_fts.rowid
+            LEFT JOIN sessions s ON s.id = m.session_id
+            WHERE messages_fts MATCH ?
+        """
+        params: List[Any] = [fts_query]
+
+        if session_id:
+            sql += " AND m.session_id = ?"
+            params.append(session_id)
+
+        sql += " ORDER BY rank ASC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute(sql, tuple(params))
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError:
+                # Graceful fallback to escaped phrase
+                try:
+                    fallback_query = '"' + cleaned.replace('"', '""') + '"'
+                    params[0] = fallback_query
+                    cursor.execute(sql, tuple(params))
+                    rows = cursor.fetchall()
+                except Exception:
+                    return []
+
+            results = []
+            for r in rows:
+                results.append(
+                    {
+                        "message_id": r["id"],
+                        "session_id": r["session_id"],
+                        "session_title": r["session_title"] or "Untitled Session",
+                        "role": r["role"],
+                        "content": r["content"],
+                        "thinking": r["thinking"],
+                        "tokens": r["tokens"],
+                        "timestamp": r["timestamp"],
+                        "snippet": r["snippet"],
+                        "rank": float(r["rank"]),
+                    }
+                )
+            return results
+
+    def get_session_transcript(
+        self, session_id: str, include_system: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch full session transcript and formatted dialogue turns for a session."""
+        with self._lock:
+            session = self.get_session(session_id)
+            if not session:
+                return None
+
+            messages = self.get_messages(session_id, include_system=include_system)
+            turns = []
+            formatted_lines = [
+                f"=== Session Transcript: {session.title} ({session.id}) ===",
+                f"Model: {session.model} | Mode: {session.mode} | Messages: {len(messages)}",
+                f"Created: {session.created_at} | Updated: {session.updated_at}",
+            ]
+            if session.summary:
+                formatted_lines.append(f"Summary: {session.summary}")
+            formatted_lines.append("=" * 60)
+
+            for idx, msg in enumerate(messages, 1):
+                turns.append(
+                    {
+                        "turn": idx,
+                        "role": msg.role,
+                        "content": msg.content,
+                        "thinking": msg.thinking,
+                        "tokens": msg.tokens,
+                        "timestamp": msg.timestamp,
+                    }
+                )
+                formatted_lines.append(f"\n[{msg.role.upper()} | {msg.timestamp}]:")
+                formatted_lines.append(msg.content)
+
+            return {
+                "session": session,
+                "turns": turns,
+                "formatted_transcript": "\n".join(formatted_lines),
+            }
 
     def close(self) -> None:
         """Close database connection cleanly."""

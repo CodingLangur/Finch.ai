@@ -74,6 +74,8 @@ class InteractiveCLI:
         table.add_row("/summarize", "Generate a 2-sentence summary and title for the current session")
         table.add_row("/sessions [limit]", "List archived conversation sessions from SQLite")
         table.add_row("/session", "Display metadata and stats for the active session")
+        table.add_row("/search <query>", "Exact-term & keyword search across past messages (FTS5)")
+        table.add_row("/transcript [id]", "View full dialogue transcript for an identified session")
         table.add_row("/new [title]", "Start a fresh session and clear in-memory context")
         table.add_row("/models", "List available models with metadata")
         table.add_row("/use <name>", "Switch active model (e.g. /use gemini-2.5-flash)")
@@ -368,6 +370,63 @@ class InteractiveCLI:
             f"[bold green]✓ Started new session:[/bold green] [bold cyan]{sess.id}[/bold cyan] ('{sess.title}')\n"
         )
 
+    def handle_search_command(self, query: str) -> None:
+        """Search past conversation messages using SQLite FTS5 lexical retrieval."""
+        if not query.strip():
+            self.console.print("[yellow]Usage: /search <exact term, date, code snippet, or phrase>[/yellow]\n")
+            return
+
+        with self.console.status(f"[bold cyan]Searching messages for '{query}'...[/bold cyan]"):
+            results = self.assistant.search_keyword(query=query, limit=10)
+
+        if not results:
+            self.console.print(f"[yellow]No matches found for '{query}'.[/yellow]\n")
+            return
+
+        table = Table(
+            title=f"Search Results for '{query}' ({len(results)} matches)",
+            box=ROUNDED,
+            header_style="bold cyan",
+        )
+        table.add_column("Session ID", style="cyan", width=16)
+        table.add_column("Session Title", style="bold white", width=22)
+        table.add_column("Role", justify="center", width=8)
+        table.add_column("Timestamp", style="dim", width=19)
+        table.add_column("Matched Snippet", style="white")
+
+        for r in results:
+            role_style = "green" if r.role.lower() == "user" else "magenta"
+            time_short = r.timestamp[:19].replace("T", " ")
+            clean_snippet = r.snippet.replace("[MATCH]", "[bold yellow]").replace("[/MATCH]", "[/bold yellow]")
+            table.add_row(
+                r.session_id,
+                r.session_title,
+                f"[{role_style}]{r.role.upper()}[/{role_style}]",
+                time_short,
+                clean_snippet,
+            )
+
+        self.console.print(table)
+        self.console.print("[dim]Use [bold cyan]/transcript <session_id>[/bold cyan] to view full dialogue.[/dim]\n")
+
+    def handle_transcript_command(self, session_id: str) -> None:
+        """Display full dialogue transcript for an identified session."""
+        target_id = session_id.strip() or self.assistant.current_session.id
+        transcript = self.assistant.load_session_transcript(session_id=target_id)
+        if not transcript:
+            self.console.print(f"[bold red]Session '{target_id}' not found.[/bold red]\n")
+            return
+
+        self.console.print(
+            Panel(
+                transcript.formatted_transcript,
+                title=f"[bold cyan]Transcript: {transcript.title} ({transcript.session_id})[/bold cyan]",
+                border_style="cyan",
+                box=ROUNDED,
+            )
+        )
+        self.console.print()
+
     async def _cleanup_and_exit(self) -> None:
         """Run session exit hooks (fast background summarization) and cleanly close database."""
         if self.assistant.config.auto_summarize_on_exit:
@@ -417,6 +476,14 @@ class InteractiveCLI:
 
             elif command == "/session":
                 self.handle_session_info_command()
+                return True
+
+            elif command == "/search":
+                self.handle_search_command(arg)
+                return True
+
+            elif command in ("/transcript", "/dialogue"):
+                self.handle_transcript_command(arg)
                 return True
 
             elif command in ("/new", "/newsession"):

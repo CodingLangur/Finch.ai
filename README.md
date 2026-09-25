@@ -34,10 +34,17 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - Relational schema with `sessions` and `messages` tables.
   - Automatically logs every user and assistant turn with timestamps, token counts, reasoning/thinking traces, and compression metadata.
   - **Fast Session Summarization**: Runs a fast background prompt on exit or via `/summarize` to generate a 2-sentence summary and concise title, saved directly into the database.
+- **Fast Lexical Search with FTS5 & Transcript Fetching (Phase 4)**:
+  - SQLite `messages_fts` virtual table synced in real-time via `AFTER INSERT`, `AFTER DELETE`, and `AFTER UPDATE` triggers.
+  - Sub-millisecond exact-term matching for code snippets (e.g. `def calculate_fibonacci(n):`), dates (`2026-09-24`), technical keywords, and filenames (`config.py`).
+  - Automatic query sanitization, BM25 relevance ranking, and contextual match snippet extraction.
+  - Structured transcript retrieval (`load_session_transcript`) restoring full conversational dialogue turns once a session is identified.
 - **Interactive Slash Commands**:
   - `/summarize` - Generate 2-sentence summary and title for current session
   - `/sessions [limit]` - List past archived sessions with message counts and summary snippets
   - `/session` - Display details and metadata of active session
+  - `/search <query>` - Exact-term & keyword search across past messages (FTS5)
+  - `/transcript [id]` - View full dialogue transcript for an identified session
   - `/new [title]` - Start a fresh session with clean context
   - `/compress [on|off|stats]` - Toggle or inspect Headroom context compression
   - `/persona [reload|edit]` - View, reload, or see edit path for `personality.md`

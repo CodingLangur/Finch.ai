@@ -20,6 +20,7 @@ from ..storage.search import (
     search_keyword,
 )
 from ..embeddings import BaseEmbedder, get_embedder
+from .tools import CHAT_TOOLS, ToolDispatcher
 
 
 class AssistantMode(str, Enum):
@@ -79,6 +80,7 @@ class AIAssistant:
             embedding_dim=self.config.embedding_dim,
         )
         self.summarizer = SessionSummarizer(archive=self.archive, provider=self.provider)
+        self.tool_dispatcher = ToolDispatcher(self)
 
         # Create the initial active session in SQLite
         self.current_session: SessionRecord = self.archive.create_session(
@@ -131,9 +133,9 @@ class AIAssistant:
         return await self.provider.health_check()
 
     async def chat_stream(
-        self, user_input: str
+        self, user_input: str, enable_tools: bool = True
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Process user input, stream model response, handle persona updates, and append turn to buffer & SQLite."""
+        """Process user input, stream model response, autonomously execute tools (single-hop), and persist turn."""
         # 1. Add user message to sliding-window memory and persist to SQLite
         self.memory.add_user_message(user_input)
         user_msg_id = self.archive.add_message(
@@ -151,32 +153,114 @@ class AIAssistant:
             model=self.active_model,
         )
 
-        # 4. Stream from provider
+        # 4. Stream from provider (Pass 1 with tools enabled)
+        active_tools = CHAT_TOOLS if enable_tools else None
         accumulated_content: List[str] = []
         accumulated_thinking: List[str] = []
-        last_chunk: Optional[StreamChunk] = None
+        accumulated_tool_calls: List[Dict[str, Any]] = []
+        pass1_last_chunk: Optional[StreamChunk] = None
 
         try:
             async for chunk in self.provider.stream_chat(
                 messages=effective_payload,
                 model=self.active_model,
+                tools=active_tools,
             ):
                 if chunk.delta:
                     accumulated_content.append(chunk.delta)
                 if chunk.thinking_delta:
                     accumulated_thinking.append(chunk.thinking_delta)
+                if chunk.tool_calls:
+                    accumulated_tool_calls.extend(chunk.tool_calls)
 
-                if chunk.is_done:
-                    chunk.compression_stats = compression_stats
+                pass1_last_chunk = chunk
 
-                last_chunk = chunk
-                yield chunk
+                # Stream out real-time thinking and text as long as no tool calls are triggered
+                if not accumulated_tool_calls:
+                    if chunk.is_done:
+                        chunk.compression_stats = compression_stats
+                    yield chunk
+
+            # Check if Pass 1 requested tool execution
+            if accumulated_tool_calls:
+                # SINGLE-HOP RETRIEVAL CYCLE:
+                # User Query -> LLM Tool Call -> DB Fetch -> Final Answer
+                first_tool = accumulated_tool_calls[0].get("function", {})
+                tool_name = first_tool.get("name", "tool")
+                tool_args = first_tool.get("arguments", {})
+                arg_desc = ""
+                if isinstance(tool_args, dict) and "query" in tool_args:
+                    arg_desc = f": '{tool_args['query']}'"
+                elif isinstance(tool_args, dict) and "session_id" in tool_args:
+                    arg_desc = f": session='{tool_args['session_id']}'"
+
+                notice_text = f"Accessing conversation archive via {tool_name}{arg_desc}..."
+                yield StreamChunk(
+                    tool_calls=accumulated_tool_calls,
+                    tool_call_notice=notice_text,
+                )
+
+                # Execute requested tools via ToolDispatcher
+                tool_results: List[Dict[str, Any]] = []
+                for tc in accumulated_tool_calls:
+                    fn_name = tc.get("function", {}).get("name", "")
+                    fn_args = tc.get("function", {}).get("arguments", {})
+                    output = await self.tool_dispatcher.execute(fn_name, fn_args)
+                    tool_results.append({
+                        "name": fn_name,
+                        "output": output,
+                        "id": tc.get("id"),
+                    })
+
+                # Build Pass 2 message payload
+                pass2_messages = list(effective_payload)
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": "".join(accumulated_content) or "",
+                    "tool_calls": accumulated_tool_calls,
+                }
+                pass2_messages.append(assistant_msg)
+
+                for tr in tool_results:
+                    tool_msg: Dict[str, Any] = {
+                        "role": "tool",
+                        "content": tr["output"],
+                    }
+                    if tr.get("id"):
+                        tool_msg["tool_call_id"] = tr["id"]
+                    pass2_messages.append(tool_msg)
+
+                # Pass 2: Stream final answer with tools=None (strict single-hop enforcement)
+                pass2_content: List[str] = []
+                pass2_thinking: List[str] = []
+                pass2_last_chunk: Optional[StreamChunk] = None
+
+                async for chunk in self.provider.stream_chat(
+                    messages=pass2_messages,
+                    model=self.active_model,
+                    tools=None,
+                ):
+                    if chunk.delta:
+                        pass2_content.append(chunk.delta)
+                    if chunk.thinking_delta:
+                        pass2_thinking.append(chunk.thinking_delta)
+
+                    if chunk.is_done:
+                        chunk.compression_stats = compression_stats
+
+                    pass2_last_chunk = chunk
+                    yield chunk
+
+                final_content = "".join(pass2_content).strip()
+                final_thinking = "".join(pass2_thinking).strip() or None
+                last_chunk = pass2_last_chunk
+            else:
+                final_content = "".join(accumulated_content).strip()
+                final_thinking = "".join(accumulated_thinking).strip() or None
+                last_chunk = pass1_last_chunk
 
             # 5. Once finished, inspect response for model-driven persona update
-            full_response = "".join(accumulated_content).strip()
-            full_thinking = "".join(accumulated_thinking).strip() or None
-
-            clean_response, updated, _ = self.persona_manager.process_response(full_response)
+            clean_response, updated, _ = self.persona_manager.process_response(final_content)
 
             if updated:
                 # Dynamically update the pinned system prompt in memory
@@ -195,14 +279,29 @@ class AIAssistant:
             # Record clean conversational turn in sliding window
             self.memory.add_assistant_message(
                 content=clean_response,
-                thinking=full_thinking,
+                thinking=final_thinking,
             )
 
             # 6. Persist assistant turn to SQLite archive
-            eval_tokens = (
-                last_chunk.stats.eval_count if (last_chunk and last_chunk.stats) else None
-            )
+            if (
+                accumulated_tool_calls
+                and pass1_last_chunk
+                and pass1_last_chunk.stats
+                and last_chunk
+                and last_chunk.stats
+            ):
+                eval_tokens = pass1_last_chunk.stats.eval_count + last_chunk.stats.eval_count
+            else:
+                eval_tokens = (
+                    last_chunk.stats.eval_count if (last_chunk and last_chunk.stats) else None
+                )
+
             turn_meta: Dict[str, Any] = {}
+            if accumulated_tool_calls:
+                turn_meta["tool_calls"] = accumulated_tool_calls
+                turn_meta["tools_executed"] = [
+                    tc.get("function", {}).get("name") for tc in accumulated_tool_calls
+                ]
             if compression_stats and compression_stats.tokens_before > 0:
                 turn_meta["compression"] = {
                     "tokens_before": compression_stats.tokens_before,
@@ -221,7 +320,7 @@ class AIAssistant:
                 session_id=self.current_session.id,
                 role="assistant",
                 content=clean_response,
-                thinking=full_thinking,
+                thinking=final_thinking,
                 tokens=eval_tokens,
                 metadata=turn_meta,
             )

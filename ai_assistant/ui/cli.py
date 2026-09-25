@@ -623,6 +623,14 @@ class InteractiveCLI:
                 if chunk.compression_stats:
                     final_comp_stats = chunk.compression_stats
 
+                # If model triggered autonomous tool execution (Phase 6)
+                if chunk.tool_call_notice:
+                    if thinking_shown:
+                        self.console.print("\n")
+                        thinking_shown = False
+                    self.console.print(f"[cyan]⚡ {chunk.tool_call_notice}[/cyan]")
+                    sys.stdout.flush()
+
                 # If model is outputting thinking tokens (e.g. Gemma 4 / reasoning models)
                 if chunk.thinking_delta:
                     if not thinking_shown:

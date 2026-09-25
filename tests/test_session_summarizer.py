@@ -29,9 +29,10 @@ class MockLLMProvider(BaseLLMProvider):
 
     async def stream_chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: str,
         options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         self.call_count += 1
         self.last_messages = messages
@@ -63,9 +64,10 @@ class FailingLLMProvider(BaseLLMProvider):
 
     async def stream_chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: str,
         options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         raise ConnectionError("Ollama service unreachable")
         yield  # make it a generator

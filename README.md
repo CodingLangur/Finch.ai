@@ -44,6 +44,14 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - **`sqlite-vec` Vector Storage**: Summary vectors are indexed in the `sessions_vec` virtual table (`vec0`) using cosine distance.
   - **Reciprocal Rank Fusion (RRF)**: Combines FTS5 lexical signals and `sqlite-vec` cosine similarity into the unified `search_hybrid` engine ($k=60$).
   - **Benchmark Suite**: Compare retrieval accuracy for vague thematic queries vs. specific keywords (`python -m benchmarks.benchmark_search`).
+- **Function Calling in Chat Mode & Autonomous Retrieval (Phase 6)**:
+  - **Tool Schemas**: Exposes `search_past_conversations` (hybrid semantic + lexical search) and `load_session_transcript` (dialogue turn fetching) via Ollama's tool-calling API.
+  - **Single-Hop Tool Execution**: Enforces a strict single retrieval cycle per turn:
+    $$\text{User Query} \longrightarrow \text{LLM Tool Call} \longrightarrow \text{DB Fetch} \longrightarrow \text{Final Answer}$$
+    Pass 2 is invoked with `tools=None`, strictly preventing multi-hop looping and preserving conversational responsiveness.
+  - **Live UI Feedback**: Streams real-time notices (`⚡ Accessing conversation archive via ...`) to the terminal when tools are executed.
+  - **Adherence Verified**: Model strictly adheres to reaching into history only when relevant to the user query, answering general queries directly without calling search.
+  - **Telemetry & Persistence**: Persists tool calls, arguments, and execution results into the SQLite archive `metadata` field for auditability.
 - **Interactive Slash Commands**:
   - `/summarize` - Generate 2-sentence summary and title for current session
   - `/sessions [limit]` - List past archived sessions with message counts and summary snippets

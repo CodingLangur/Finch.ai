@@ -98,9 +98,10 @@ class GeminiProvider(BaseLLMProvider):
 
     async def stream_chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: str,
         options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Stream chat completions from Gemini with real-time telemetry."""
         if not self.api_key:

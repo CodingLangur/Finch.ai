@@ -57,11 +57,12 @@ class OllamaProvider(BaseLLMProvider):
 
     async def stream_chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: str,
         options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Stream chat tokens from Ollama with real-time telemetry extraction."""
+        """Stream chat tokens from Ollama with real-time telemetry extraction and tool call support."""
         url = f"{self.base_url}/api/chat"
         payload: Dict[str, Any] = {
             "model": model,
@@ -70,6 +71,8 @@ class OllamaProvider(BaseLLMProvider):
         }
         if options:
             payload["options"] = options
+        if tools:
+            payload["tools"] = tools
 
         start_time = time.perf_counter()
         first_token_time: Optional[float] = None
@@ -93,14 +96,15 @@ class OllamaProvider(BaseLLMProvider):
                         except json.JSONDecodeError:
                             continue
 
-                        # Extract text delta or thinking delta
+                        # Extract text delta, thinking delta, or tool calls
                         msg_dict = chunk_data.get("message", {})
                         delta = msg_dict.get("content", "")
                         thinking_delta = msg_dict.get("thinking", "")
+                        tool_calls = msg_dict.get("tool_calls", None)
                         is_done = chunk_data.get("done", False)
 
                         # Track Time To First Token
-                        if (delta or thinking_delta) and first_token_time is None:
+                        if (delta or thinking_delta or tool_calls) and first_token_time is None:
                             first_token_time = time.perf_counter()
 
                         stats: Optional[StreamStats] = None
@@ -137,6 +141,7 @@ class OllamaProvider(BaseLLMProvider):
                             thinking_delta=thinking_delta,
                             is_done=is_done,
                             stats=stats,
+                            tool_calls=tool_calls,
                         )
 
             except httpx.ConnectError as e:

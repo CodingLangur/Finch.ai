@@ -54,6 +54,8 @@ class StreamChunk:
     stats: Optional[StreamStats] = None
     persona_updated: bool = False
     compression_stats: Optional[Any] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_notice: Optional[str] = None
 
 
 class BaseLLMProvider(ABC):
@@ -78,9 +80,10 @@ class BaseLLMProvider(ABC):
     @abstractmethod
     async def stream_chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: str,
         options: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Stream chat completions turn-by-turn."""
         pass

@@ -33,9 +33,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["chatbot", "agent"],
+        choices=["chat", "chatbot", "agent"],
         default=None,
-        help="Initial mode (default: chatbot)",
+        help="Initial mode (default: chat)",
     )
     parser.add_argument(
         "--no-compression",

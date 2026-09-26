@@ -20,12 +20,26 @@ from ..storage.search import (
     search_keyword,
 )
 from ..embeddings import BaseEmbedder, get_embedder
-from .tools import CHAT_TOOLS, ToolDispatcher
+from .tools import AGENT_TOOLS, CHAT_TOOLS, ToolDispatcher
 
 
 class AssistantMode(str, Enum):
-    CHATBOT = "chatbot"
+    CHAT = "chat"
     AGENT = "agent"
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            val = value.strip().lower()
+            if val in ("chat", "chatbot"):
+                return cls.CHAT
+            if val == "agent":
+                return cls.AGENT
+        return super()._missing_(value)
+
+
+# Backward-compatibility alias
+AssistantMode.CHATBOT = AssistantMode.CHAT
 
 
 class AIAssistant:
@@ -102,19 +116,47 @@ class AIAssistant:
         return content
 
     def set_mode(self, mode: AssistantMode | str) -> AssistantMode:
-        """Switch between Chatbot and Agent modes."""
+        """Switch between Chat and Agent modes."""
         if isinstance(mode, str):
-            mode = AssistantMode(mode.lower())
-        self.mode = mode
+            self.mode = AssistantMode(mode)
+        else:
+            self.mode = mode
+        try:
+            self.archive.update_session_mode(self.current_session.id, self.mode.value)
+        except Exception:
+            pass
         return self.mode
 
     def toggle_mode(self) -> AssistantMode:
-        """Toggle between Chatbot and Agent modes."""
-        if self.mode == AssistantMode.CHATBOT:
-            self.mode = AssistantMode.AGENT
+        """Toggle between Chat and Agent modes."""
+        if self.mode == AssistantMode.AGENT:
+            return self.set_mode(AssistantMode.CHAT)
         else:
-            self.mode = AssistantMode.CHATBOT
-        return self.mode
+            return self.set_mode(AssistantMode.AGENT)
+
+    def _format_tool_notice(self, tool_name: str, tool_args: Any) -> str:
+        """Format a human-readable argument preview for tool execution notices."""
+        if not isinstance(tool_args, dict):
+            return ""
+        if "query" in tool_args:
+            return f": '{tool_args['query']}'"
+        if "session_id" in tool_args:
+            return f": session='{tool_args['session_id']}'"
+        if "command" in tool_args:
+            cmd = str(tool_args["command"]).strip()
+            if len(cmd) > 30:
+                cmd = cmd[:27] + "..."
+            return f": '{cmd}'"
+        if "file_path" in tool_args:
+            return f": '{tool_args['file_path']}'"
+        if "directory_path" in tool_args:
+            return f": '{tool_args['directory_path']}'"
+        if "code" in tool_args:
+            first_line = str(tool_args["code"]).strip().splitlines()[0] if tool_args["code"] else ""
+            if len(first_line) > 30:
+                first_line = first_line[:27] + "..."
+            return f": {first_line}"
+        return ""
 
     def set_model(self, model_name: str) -> None:
         """Switch the active generation model."""
@@ -135,7 +177,11 @@ class AIAssistant:
     async def chat_stream(
         self, user_input: str, enable_tools: bool = True
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Process user input, stream model response, autonomously execute tools (single-hop), and persist turn."""
+        """Process user input, stream model response, execute tools, and persist turn.
+        
+        In Chat mode: Restricts tools strictly to memory retrieval and enforces a single retrieval cycle.
+        In Agent mode: Executes sequential tool calls in a multi-turn while loop until completion.
+        """
         # 1. Add user message to sliding-window memory and persist to SQLite
         self.memory.add_user_message(user_input)
         user_msg_id = self.archive.add_message(
@@ -153,121 +199,255 @@ class AIAssistant:
             model=self.active_model,
         )
 
-        # 4. Stream from provider (Pass 1 with tools enabled)
-        active_tools = CHAT_TOOLS if enable_tools else None
-        accumulated_content: List[str] = []
-        accumulated_thinking: List[str] = []
+        # 4. Determine execution flow based on mode
+        is_agent_mode = self.mode == AssistantMode.AGENT
         accumulated_tool_calls: List[Dict[str, Any]] = []
-        pass1_last_chunk: Optional[StreamChunk] = None
+        all_tools_executed: List[str] = []
+        final_content: str = ""
+        final_thinking: Optional[str] = None
+        last_chunk: Optional[StreamChunk] = None
+        total_eval_tokens = 0
+        agent_turns = 1
 
         try:
-            async for chunk in self.provider.stream_chat(
-                messages=effective_payload,
-                model=self.active_model,
-                tools=active_tools,
-            ):
-                if chunk.delta:
-                    accumulated_content.append(chunk.delta)
-                if chunk.thinking_delta:
-                    accumulated_thinking.append(chunk.thinking_delta)
-                if chunk.tool_calls:
-                    accumulated_tool_calls.extend(chunk.tool_calls)
-
-                pass1_last_chunk = chunk
-
-                # Stream out real-time thinking and text as long as no tool calls are triggered
-                if not accumulated_tool_calls:
-                    if chunk.is_done:
-                        chunk.compression_stats = compression_stats
-                    yield chunk
-
-            # Check if Pass 1 requested tool execution
-            if accumulated_tool_calls:
-                # SINGLE-HOP RETRIEVAL CYCLE:
+            if not is_agent_mode:
+                # =========================================================================
+                # CHAT MODE: Strict Single-Hop Retrieval Cycle
                 # User Query -> LLM Tool Call -> DB Fetch -> Final Answer
-                first_tool = accumulated_tool_calls[0].get("function", {})
-                tool_name = first_tool.get("name", "tool")
-                tool_args = first_tool.get("arguments", {})
-                arg_desc = ""
-                if isinstance(tool_args, dict) and "query" in tool_args:
-                    arg_desc = f": '{tool_args['query']}'"
-                elif isinstance(tool_args, dict) and "session_id" in tool_args:
-                    arg_desc = f": session='{tool_args['session_id']}'"
-
-                notice_text = f"Accessing conversation archive via {tool_name}{arg_desc}..."
-                yield StreamChunk(
-                    tool_calls=accumulated_tool_calls,
-                    tool_call_notice=notice_text,
-                )
-
-                # Execute requested tools via ToolDispatcher
-                tool_results: List[Dict[str, Any]] = []
-                for tc in accumulated_tool_calls:
-                    fn_name = tc.get("function", {}).get("name", "")
-                    fn_args = tc.get("function", {}).get("arguments", {})
-                    output = await self.tool_dispatcher.execute(fn_name, fn_args)
-                    tool_results.append({
-                        "name": fn_name,
-                        "output": output,
-                        "id": tc.get("id"),
-                    })
-
-                # Build Pass 2 message payload
-                pass2_messages = list(effective_payload)
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": "".join(accumulated_content) or "",
-                    "tool_calls": accumulated_tool_calls,
-                }
-                pass2_messages.append(assistant_msg)
-
-                for tr in tool_results:
-                    tool_msg: Dict[str, Any] = {
-                        "role": "tool",
-                        "content": tr["output"],
-                    }
-                    if tr.get("id"):
-                        tool_msg["tool_call_id"] = tr["id"]
-                    pass2_messages.append(tool_msg)
-
-                # Pass 2: Stream final answer with tools=None (strict single-hop enforcement)
-                pass2_content: List[str] = []
-                pass2_thinking: List[str] = []
-                pass2_last_chunk: Optional[StreamChunk] = None
+                # =========================================================================
+                active_tools = CHAT_TOOLS if enable_tools else None
+                pass1_content: List[str] = []
+                pass1_thinking: List[str] = []
+                pass1_tool_calls: List[Dict[str, Any]] = []
+                pass1_last_chunk: Optional[StreamChunk] = None
 
                 async for chunk in self.provider.stream_chat(
-                    messages=pass2_messages,
+                    messages=effective_payload,
                     model=self.active_model,
-                    tools=None,
+                    tools=active_tools,
                 ):
                     if chunk.delta:
-                        pass2_content.append(chunk.delta)
+                        pass1_content.append(chunk.delta)
                     if chunk.thinking_delta:
-                        pass2_thinking.append(chunk.thinking_delta)
+                        pass1_thinking.append(chunk.thinking_delta)
+                    if chunk.tool_calls:
+                        pass1_tool_calls.extend(chunk.tool_calls)
 
-                    if chunk.is_done:
-                        chunk.compression_stats = compression_stats
+                    pass1_last_chunk = chunk
 
-                    pass2_last_chunk = chunk
-                    yield chunk
+                    # Stream out real-time thinking and text as long as no tool calls are triggered
+                    if not pass1_tool_calls:
+                        if chunk.is_done:
+                            chunk.compression_stats = compression_stats
+                        yield chunk
 
-                final_content = "".join(pass2_content).strip()
-                final_thinking = "".join(pass2_thinking).strip() or None
-                last_chunk = pass2_last_chunk
+                if pass1_last_chunk and pass1_last_chunk.stats:
+                    total_eval_tokens += pass1_last_chunk.stats.eval_count
+
+                if pass1_tool_calls:
+                    accumulated_tool_calls.extend(pass1_tool_calls)
+                    first_tool = pass1_tool_calls[0].get("function", {})
+                    tool_name = first_tool.get("name", "tool")
+                    tool_args = first_tool.get("arguments", {})
+                    arg_desc = self._format_tool_notice(tool_name, tool_args)
+
+                    notice_text = f"Accessing conversation archive via {tool_name}{arg_desc}..."
+                    yield StreamChunk(
+                        tool_calls=pass1_tool_calls,
+                        tool_call_notice=notice_text,
+                    )
+
+                    # Execute requested tools via ToolDispatcher
+                    tool_results: List[Dict[str, Any]] = []
+                    for tc in pass1_tool_calls:
+                        fn_name = tc.get("function", {}).get("name", "")
+                        fn_args = tc.get("function", {}).get("arguments", {})
+                        all_tools_executed.append(fn_name)
+                        output = await self.tool_dispatcher.execute(fn_name, fn_args)
+                        tool_results.append({
+                            "name": fn_name,
+                            "output": output,
+                            "id": tc.get("id"),
+                        })
+
+                    # Build Pass 2 message payload
+                    pass2_messages = list(effective_payload)
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": "".join(pass1_content) or "",
+                        "tool_calls": pass1_tool_calls,
+                    }
+                    pass2_messages.append(assistant_msg)
+
+                    for tr in tool_results:
+                        tool_msg: Dict[str, Any] = {
+                            "role": "tool",
+                            "name": tr["name"],
+                            "content": tr["output"],
+                        }
+                        if tr.get("id"):
+                            tool_msg["tool_call_id"] = tr["id"]
+                        pass2_messages.append(tool_msg)
+
+                    # Pass 2: Stream final answer with tools=None (strict single-hop enforcement)
+                    pass2_content: List[str] = []
+                    pass2_thinking: List[str] = []
+                    pass2_last_chunk: Optional[StreamChunk] = None
+
+                    async for chunk in self.provider.stream_chat(
+                        messages=pass2_messages,
+                        model=self.active_model,
+                        tools=None,
+                    ):
+                        if chunk.delta:
+                            pass2_content.append(chunk.delta)
+                        if chunk.thinking_delta:
+                            pass2_thinking.append(chunk.thinking_delta)
+
+                        if chunk.is_done:
+                            chunk.compression_stats = compression_stats
+
+                        pass2_last_chunk = chunk
+                        yield chunk
+
+                    if pass2_last_chunk and pass2_last_chunk.stats:
+                        total_eval_tokens += pass2_last_chunk.stats.eval_count
+
+                    final_content = "".join(pass2_content).strip()
+                    final_thinking = "".join(pass2_thinking).strip() or None
+                    last_chunk = pass2_last_chunk
+                else:
+                    final_content = "".join(pass1_content).strip()
+                    final_thinking = "".join(pass1_thinking).strip() or None
+                    last_chunk = pass1_last_chunk
+
             else:
-                final_content = "".join(accumulated_content).strip()
-                final_thinking = "".join(accumulated_thinking).strip() or None
-                last_chunk = pass1_last_chunk
+                # =========================================================================
+                # AGENT MODE: Sequential Multi-Turn While Loop
+                # Executes tool calls sequentially until completion or max turns reached
+                # =========================================================================
+                active_tools = AGENT_TOOLS if enable_tools else None
+                max_turns = getattr(self.config, "agent_max_turns", 10)
+                running_payload = list(effective_payload)
+                turn_count = 0
+                turn_tool_calls: List[Dict[str, Any]] = []
+
+                while turn_count < max_turns:
+                    turn_count += 1
+                    agent_turns = turn_count
+                    turn_content: List[str] = []
+                    turn_thinking: List[str] = []
+                    turn_tool_calls = []
+                    turn_last_chunk: Optional[StreamChunk] = None
+
+                    async for chunk in self.provider.stream_chat(
+                        messages=running_payload,
+                        model=self.active_model,
+                        tools=active_tools,
+                    ):
+                        if chunk.delta:
+                            turn_content.append(chunk.delta)
+                        if chunk.thinking_delta:
+                            turn_thinking.append(chunk.thinking_delta)
+                        if chunk.tool_calls:
+                            turn_tool_calls.extend(chunk.tool_calls)
+
+                        turn_last_chunk = chunk
+
+                        # If no tool calls in this turn, stream out real-time tokens to user
+                        if not turn_tool_calls:
+                            if chunk.is_done:
+                                chunk.compression_stats = compression_stats
+                            yield chunk
+
+                    if turn_last_chunk and turn_last_chunk.stats:
+                        total_eval_tokens += turn_last_chunk.stats.eval_count
+                    last_chunk = turn_last_chunk
+
+                    if not turn_tool_calls:
+                        # Model produced final textual answer without calling any further tools
+                        final_content = "".join(turn_content).strip()
+                        final_thinking = "".join(turn_thinking).strip() or None
+                        break
+
+                    # Tool calls were emitted in this step
+                    accumulated_tool_calls.extend(turn_tool_calls)
+                    for tc in turn_tool_calls:
+                        fn_name = tc.get("function", {}).get("name", "tool")
+                        fn_args = tc.get("function", {}).get("arguments", {})
+                        arg_desc = self._format_tool_notice(fn_name, fn_args)
+                        notice_text = f"Agent Step {turn_count}: Executing {fn_name}{arg_desc}..."
+                        yield StreamChunk(
+                            tool_calls=[tc],
+                            tool_call_notice=notice_text,
+                        )
+
+                    # Execute requested tools via ToolDispatcher
+                    tool_results: List[Dict[str, Any]] = []
+                    for tc in turn_tool_calls:
+                        fn_name = tc.get("function", {}).get("name", "")
+                        fn_args = tc.get("function", {}).get("arguments", {})
+                        all_tools_executed.append(fn_name)
+                        output = await self.tool_dispatcher.execute(fn_name, fn_args)
+                        tool_results.append({
+                            "name": fn_name,
+                            "output": output,
+                            "id": tc.get("id"),
+                        })
+
+                    # Append assistant message with tool calls to running payload
+                    running_payload.append({
+                        "role": "assistant",
+                        "content": "".join(turn_content) or "",
+                        "tool_calls": turn_tool_calls,
+                    })
+
+                    # Append tool result messages
+                    for tr in tool_results:
+                        tool_msg: Dict[str, Any] = {
+                            "role": "tool",
+                            "name": tr["name"],
+                            "content": tr["output"],
+                        }
+                        if tr.get("id"):
+                            tool_msg["tool_call_id"] = tr["id"]
+                        running_payload.append(tool_msg)
+
+                # If max turns reached and model was still calling tools, synthesize final answer
+                if not final_content and turn_tool_calls:
+                    synth_content: List[str] = []
+                    synth_thinking: List[str] = []
+                    synth_last_chunk: Optional[StreamChunk] = None
+
+                    async for chunk in self.provider.stream_chat(
+                        messages=running_payload,
+                        model=self.active_model,
+                        tools=None,
+                    ):
+                        if chunk.delta:
+                            synth_content.append(chunk.delta)
+                        if chunk.thinking_delta:
+                            synth_thinking.append(chunk.thinking_delta)
+
+                        if chunk.is_done:
+                            chunk.compression_stats = compression_stats
+
+                        synth_last_chunk = chunk
+                        yield chunk
+
+                    if synth_last_chunk and synth_last_chunk.stats:
+                        total_eval_tokens += synth_last_chunk.stats.eval_count
+                    last_chunk = synth_last_chunk
+                    final_content = "".join(synth_content).strip()
+                    final_thinking = "".join(synth_thinking).strip() or None
 
             # 5. Once finished, inspect response for model-driven persona update
             clean_response, updated, _ = self.persona_manager.process_response(final_content)
 
             if updated:
-                # Dynamically update the pinned system prompt in memory
                 new_sys_prompt = self.persona_manager.build_system_prompt()
                 self.memory.set_system_prompt(new_sys_prompt)
 
-                # Emit a final notification chunk so UI knows persona changed
                 yield StreamChunk(
                     delta="",
                     is_done=True,
@@ -283,25 +463,18 @@ class AIAssistant:
             )
 
             # 6. Persist assistant turn to SQLite archive
-            if (
-                accumulated_tool_calls
-                and pass1_last_chunk
-                and pass1_last_chunk.stats
-                and last_chunk
-                and last_chunk.stats
-            ):
-                eval_tokens = pass1_last_chunk.stats.eval_count + last_chunk.stats.eval_count
-            else:
-                eval_tokens = (
-                    last_chunk.stats.eval_count if (last_chunk and last_chunk.stats) else None
-                )
+            eval_tokens = total_eval_tokens if total_eval_tokens > 0 else (
+                last_chunk.stats.eval_count if (last_chunk and last_chunk.stats) else None
+            )
 
-            turn_meta: Dict[str, Any] = {}
+            turn_meta: Dict[str, Any] = {
+                "mode": self.mode.value,
+            }
+            if is_agent_mode:
+                turn_meta["agent_turns"] = agent_turns
             if accumulated_tool_calls:
                 turn_meta["tool_calls"] = accumulated_tool_calls
-                turn_meta["tools_executed"] = [
-                    tc.get("function", {}).get("name") for tc in accumulated_tool_calls
-                ]
+                turn_meta["tools_executed"] = all_tools_executed
             if compression_stats and compression_stats.tokens_before > 0:
                 turn_meta["compression"] = {
                     "tokens_before": compression_stats.tokens_before,

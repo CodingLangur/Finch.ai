@@ -80,7 +80,7 @@ class InteractiveCLI:
         table.add_row("/new [title]", "Start a fresh session and clear in-memory context")
         table.add_row("/models", "List available models with metadata")
         table.add_row("/use <name>", "Switch active model (e.g. /use gemini-2.5-flash)")
-        table.add_row("/mode [chatbot|agent]", "Toggle or set assistant mode")
+        table.add_row("/mode [chat|agent]", "Toggle or set assistant mode (chat vs agent)")
         table.add_row("/compress [on|off|stats]", "Toggle or inspect Headroom context compression")
         table.add_row("/persona [reload|edit]", "View, reload, or manage personality.md")
         table.add_row("/buffer", "Inspect current sliding-window message buffer")
@@ -565,7 +565,7 @@ class InteractiveCLI:
                         new_mode = self.assistant.set_mode(arg)
                         self.console.print(f"[bold green]Switched mode to:[/bold green] {new_mode.value.upper()}\n")
                     except ValueError:
-                        self.console.print(f"[bold red]Invalid mode '{arg}'. Choose 'chatbot' or 'agent'.[/bold red]\n")
+                        self.console.print(f"[bold red]Invalid mode '{arg}'. Choose 'chat' or 'agent'.[/bold red]\n")
                 else:
                     toggled = self.assistant.toggle_mode()
                     self.console.print(f"[bold magenta]Toggled mode to:[/bold magenta] {toggled.value.upper()}\n")

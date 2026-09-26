@@ -339,6 +339,22 @@ class SQLiteArchive:
                 )
                 return cursor.rowcount > 0
 
+    def update_session_mode(self, session_id: str, mode: str) -> bool:
+        """Update the mode for a session."""
+        now = utc_now_iso()
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                cursor = conn.execute(
+                    """
+                    UPDATE sessions
+                    SET mode = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (mode, now, session_id),
+                )
+                return cursor.rowcount > 0
+
     def delete_session(self, session_id: str) -> bool:
         """Delete session and cascade delete all its messages and vector embeddings."""
         with self._lock:

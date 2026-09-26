@@ -51,7 +51,17 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
     Pass 2 is invoked with `tools=None`, strictly preventing multi-hop looping and preserving conversational responsiveness.
   - **Live UI Feedback**: Streams real-time notices (`⚡ Accessing conversation archive via ...`) to the terminal when tools are executed.
   - **Adherence Verified**: Model strictly adheres to reaching into history only when relevant to the user query, answering general queries directly without calling search.
-  - **Telemetry & Persistence**: Persists tool calls, arguments, and execution results into the SQLite archive `metadata` field for auditability.
+- **Chat vs. Agent Mode Toggle & Multi-Turn Loop (Phase 7)**:
+  - **Mode State Machine**: Runtime flag (`mode = "chat"` vs. `mode = "agent"`), controllable via `/mode [chat|agent]` or `--mode <chat|agent>`.
+  - **Chat Mode (Safety & Low Latency)**: Tools are restricted strictly to conversation memory retrieval (`search_past_conversations`, `load_session_transcript`) with single-hop enforcement to preserve minimal latency and prevent looping.
+  - **Agent Mode Action Capabilities**: Exposes action tools:
+    - `run_terminal_command` - Local shell command execution with timeout and output capture
+    - `python_interpreter` - Standalone Python REPL subshell for calculations and data processing
+    - `read_file` - Inspect local file contents
+    - `write_file` - Create or overwrite local files with automatic directory creation
+    - `list_directory` - Inspect directory entries, types, and sizes
+  - **Sequential Multi-Turn Execution Loop**: In agent mode, an autonomous `while` loop executes sequential tool calls across multiple turns until the task is complete, reporting live step progress (`⚡ Agent Step N: Executing ...`) and logging full multi-turn metadata to SQLite.
+  - **Multi-Provider Tool Calling**: Full tool-calling and multi-turn execution support across both local Ollama and Google Gemini (`gemini-2.5-flash`).
 - **Interactive Slash Commands**:
   - `/summarize` - Generate 2-sentence summary and title for current session
   - `/sessions [limit]` - List past archived sessions with message counts and summary snippets
@@ -64,7 +74,7 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - `/persona [reload|edit]` - View, reload, or see edit path for `personality.md`
   - `/models` - List available models with sizes and parameter counts
   - `/use <model>` - Switch active model dynamically
-  - `/mode [chatbot|agent]` - Inspect or toggle between Chatbot and Agent modes
+  - `/mode [chat|agent]` - Inspect or toggle between Chat and Agent modes
   - `/buffer` - View active context window and character/token breakdown
   - `/clear` - Reset conversation history while preserving system prompt
   - `/system [prompt]` - View or modify pinned system prompt directly

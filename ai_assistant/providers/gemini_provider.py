@@ -70,8 +70,28 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             raise RuntimeError(f"Failed to query models from Gemini API: {e}") from e
 
+    def _convert_tools(
+        self, tools: Optional[List[Dict[str, Any]]]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Convert standard OpenAI/Ollama tool schemas into Gemini functionDeclarations."""
+        if not tools:
+            return None
+
+        declarations: List[Dict[str, Any]] = []
+        for t in tools:
+            fn = t.get("function", t)
+            dec: Dict[str, Any] = {
+                "name": fn.get("name"),
+                "description": fn.get("description", ""),
+            }
+            if "parameters" in fn:
+                dec["parameters"] = fn["parameters"]
+            declarations.append(dec)
+
+        return [{"functionDeclarations": declarations}]
+
     def _convert_messages(
-        self, messages: List[Dict[str, str]]
+        self, messages: List[Dict[str, Any]]
     ) -> tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """Convert standard messages into Gemini system instruction and alternating turns."""
         system_instruction: Optional[Dict[str, Any]] = None
@@ -86,13 +106,55 @@ class GeminiProvider(BaseLLMProvider):
                 system_instruction = {"parts": [{"text": content}]}
                 continue
 
-            gemini_role = "user" if role == "user" else "model"
+            if role in ("assistant", "model"):
+                parts: List[Dict[str, Any]] = []
+                if content:
+                    parts.append({"text": content})
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        fn = tc.get("function", {})
+                        fn_args = fn.get("arguments", {})
+                        if isinstance(fn_args, str):
+                            try:
+                                fn_args = json.loads(fn_args)
+                            except Exception:
+                                fn_args = {"input": fn_args}
+                        parts.append({
+                            "functionCall": {
+                                "name": fn.get("name"),
+                                "args": fn_args,
+                            }
+                        })
+                if not parts:
+                    parts.append({"text": ""})
 
-            # Merge adjacent messages with the same role to prevent Gemini 400 Bad Request
+                if contents and contents[-1]["role"] == "model":
+                    contents[-1]["parts"].extend(parts)
+                else:
+                    contents.append({"role": "model", "parts": parts})
+                continue
+
+            if role == "tool":
+                func_name = msg.get("name") or "tool"
+                part = {
+                    "functionResponse": {
+                        "name": func_name,
+                        "response": {"result": content},
+                    }
+                }
+                if contents and contents[-1]["role"] == "function":
+                    contents[-1]["parts"].append(part)
+                else:
+                    contents.append({"role": "function", "parts": [part]})
+                continue
+
+            # Standard user message
+            gemini_role = "user"
+            part = {"text": content}
             if contents and contents[-1]["role"] == gemini_role:
-                contents[-1]["parts"].append({"text": content})
+                contents[-1]["parts"].append(part)
             else:
-                contents.append({"role": gemini_role, "parts": [{"text": content}]})
+                contents.append({"role": gemini_role, "parts": [part]})
 
         return system_instruction, contents
 
@@ -103,7 +165,7 @@ class GeminiProvider(BaseLLMProvider):
         options: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Stream chat completions from Gemini with real-time telemetry."""
+        """Stream chat completions from Gemini with real-time telemetry and tool call support."""
         if not self.api_key:
             raise RuntimeError(
                 "Gemini API key is required. Please set GEMINI_API_KEY in your .env file."
@@ -118,6 +180,11 @@ class GeminiProvider(BaseLLMProvider):
         }
         if system_instruction:
             payload["system_instruction"] = system_instruction
+
+        if tools:
+            gemini_tools = self._convert_tools(tools)
+            if gemini_tools:
+                payload["tools"] = gemini_tools
 
         if options:
             gen_config: Dict[str, Any] = {}
@@ -174,13 +241,25 @@ class GeminiProvider(BaseLLMProvider):
                             for part in content_parts:
                                 text_delta = part.get("text", "")
                                 thinking_delta = part.get("thought", "")
+                                fc = part.get("functionCall")
+                                chunk_tool_calls: Optional[List[Dict[str, Any]]] = None
 
-                                if (text_delta or thinking_delta) and first_token_time is None:
+                                if fc:
+                                    chunk_tool_calls = [{
+                                        "id": f"call_{int(time.time() * 1000)}",
+                                        "function": {
+                                            "name": fc.get("name"),
+                                            "arguments": fc.get("args", {}),
+                                        },
+                                    }]
+
+                                if (text_delta or thinking_delta or chunk_tool_calls) and first_token_time is None:
                                     first_token_time = time.perf_counter()
 
                                 yield StreamChunk(
                                     delta=text_delta,
                                     thinking_delta=thinking_delta,
+                                    tool_calls=chunk_tool_calls,
                                     is_done=False,
                                 )
 

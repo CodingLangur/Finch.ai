@@ -45,7 +45,10 @@ class AppConfig:
         default_factory=lambda: int(os.getenv("WINDOW_SIZE", "8"))
     )
     default_mode: str = field(
-        default_factory=lambda: os.getenv("DEFAULT_MODE", "chatbot")
+        default_factory=lambda: os.getenv("DEFAULT_MODE", "chat")
+    )
+    agent_max_turns: int = field(
+        default_factory=lambda: int(os.getenv("AGENT_MAX_TURNS", "10"))
     )
     system_prompt: str = field(
         default_factory=lambda: os.getenv(

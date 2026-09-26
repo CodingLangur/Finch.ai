@@ -102,6 +102,22 @@ class AppConfig:
     message_compression_threshold: int = field(
         default_factory=lambda: int(os.getenv("MESSAGE_COMPRESSION_THRESHOLD", "1024"))
     )
+    # Agent Mode Tool Permission Toggles
+    enable_terminal_tool: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_TERMINAL_TOOL", "true").lower() in ("true", "1", "yes")
+    )
+    enable_python_tool: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_PYTHON_TOOL", "true").lower() in ("true", "1", "yes")
+    )
+    enable_web_tool: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_WEB_TOOL", "false").lower() in ("true", "1", "yes")
+    )
+    enable_file_tools: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_FILE_TOOLS", "true").lower() in ("true", "1", "yes")
+    )
+    terminal_timeout: float = field(
+        default_factory=lambda: float(os.getenv("TERMINAL_TIMEOUT", "30.0"))
+    )
 
 
 # Global singleton configuration

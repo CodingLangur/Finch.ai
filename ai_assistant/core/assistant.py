@@ -20,7 +20,25 @@ from ..storage.search import (
     search_keyword,
 )
 from ..embeddings import BaseEmbedder, get_embedder
-from .tools import AGENT_TOOLS, CHAT_TOOLS, ToolDispatcher
+from .tools import (
+    AGENT_ACTION_TOOLS,
+    AGENT_TOOLS,
+    ALL_AGENT_TOOLS,
+    CHAT_TOOLS,
+    FETCH_WEB_PAGE_TOOL,
+    LIST_DIRECTORY_TOOL,
+    LOAD_SESSION_TRANSCRIPT_TOOL,
+    PYTHON_INTERPRETER_TOOL,
+    READ_FILE_TOOL,
+    RUN_TERMINAL_COMMAND_TOOL,
+    SEARCH_PAST_CONVERSATIONS_TOOL,
+    TOOL_CATEGORIES,
+    TOOL_NAME_TO_CATEGORY,
+    WEB_SEARCH_TOOL,
+    WEB_TOOLS,
+    WRITE_FILE_TOOL,
+    ToolDispatcher,
+)
 
 
 class AssistantMode(str, Enum):
@@ -96,6 +114,14 @@ class AIAssistant:
             compression_threshold_bytes=getattr(self.config, "message_compression_threshold", 1024),
         )
         self.summarizer = SessionSummarizer(archive=self.archive, provider=self.provider)
+
+        # Agent mode tool permission policy: individual category toggles
+        self.tool_permissions: Dict[str, bool] = {
+            "terminal": getattr(self.config, "enable_terminal_tool", True),
+            "python": getattr(self.config, "enable_python_tool", True),
+            "web": getattr(self.config, "enable_web_tool", False),
+            "files": getattr(self.config, "enable_file_tools", True),
+        }
         self.tool_dispatcher = ToolDispatcher(self)
 
         # Create the initial active session in SQLite
@@ -109,6 +135,54 @@ class AIAssistant:
                 role="system",
                 content=system_prompt,
             )
+
+    def is_tool_category_enabled(self, category: str) -> bool:
+        """Check if a tool category (terminal, python, web, files) is currently enabled."""
+        return self.tool_permissions.get(category.lower(), False)
+
+    def set_tool_permission(self, category: str, enabled: bool) -> bool:
+        """Set permission for a tool category. Returns the new boolean state."""
+        cat = category.lower()
+        if cat not in self.tool_permissions:
+            raise ValueError(f"Unknown tool category '{category}'. Available: {list(self.tool_permissions.keys())}")
+        self.tool_permissions[cat] = bool(enabled)
+        return self.tool_permissions[cat]
+
+    def toggle_tool_permission(self, category: str) -> bool:
+        """Toggle permission for a tool category on or off. Returns the new state."""
+        cat = category.lower()
+        if cat not in self.tool_permissions:
+            raise ValueError(f"Unknown tool category '{category}'. Available: {list(self.tool_permissions.keys())}")
+        self.tool_permissions[cat] = not self.tool_permissions[cat]
+        return self.tool_permissions[cat]
+
+    def get_tool_permissions(self) -> Dict[str, bool]:
+        """Return a copy of the current tool permissions dict."""
+        return dict(self.tool_permissions)
+
+    def get_tool_category(self, tool_name: str) -> str:
+        """Return the category name for a given tool."""
+        return TOOL_NAME_TO_CATEGORY.get(tool_name, "other")
+
+    def get_active_tools(self, enable_tools: bool = True) -> Optional[List[Dict[str, Any]]]:
+        """Resolve active tool definitions based on mode and enabled category toggles."""
+        if not enable_tools:
+            return None
+
+        if self.mode == AssistantMode.CHAT:
+            return list(CHAT_TOOLS)
+
+        # In Agent Mode: dynamically assemble enabled tool categories
+        tools: List[Dict[str, Any]] = list(CHAT_TOOLS)
+        if self.is_tool_category_enabled("terminal"):
+            tools.append(RUN_TERMINAL_COMMAND_TOOL)
+        if self.is_tool_category_enabled("python"):
+            tools.append(PYTHON_INTERPRETER_TOOL)
+        if self.is_tool_category_enabled("web"):
+            tools.extend(WEB_TOOLS)
+        if self.is_tool_category_enabled("files"):
+            tools.extend([READ_FILE_TOOL, WRITE_FILE_TOOL, LIST_DIRECTORY_TOOL])
+        return tools
 
     def reload_persona(self) -> str:
         """Reload personality.md from disk and refresh the pinned system prompt."""
@@ -153,6 +227,11 @@ class AIAssistant:
             return f": '{tool_args['file_path']}'"
         if "directory_path" in tool_args:
             return f": '{tool_args['directory_path']}'"
+        if "url" in tool_args:
+            u = str(tool_args["url"]).strip()
+            if len(u) > 35:
+                u = u[:32] + "..."
+            return f": '{u}'"
         if "code" in tool_args:
             first_line = str(tool_args["code"]).strip().splitlines()[0] if tool_args["code"] else ""
             if len(first_line) > 30:
@@ -328,7 +407,7 @@ class AIAssistant:
                 # AGENT MODE: Sequential Multi-Turn While Loop
                 # Executes tool calls sequentially until completion or max turns reached
                 # =========================================================================
-                active_tools = AGENT_TOOLS if enable_tools else None
+                active_tools = self.get_active_tools(enable_tools=enable_tools)
                 max_turns = getattr(self.config, "agent_max_turns", 10)
                 running_payload = list(effective_payload)
                 turn_count = 0

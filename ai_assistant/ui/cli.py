@@ -81,6 +81,7 @@ class InteractiveCLI:
         table.add_row("/models", "List available models with metadata")
         table.add_row("/use <name>", "Switch active model (e.g. /use gemini-2.5-flash)")
         table.add_row("/mode [chat|agent]", "Toggle or set assistant mode (chat vs agent)")
+        table.add_row("/tools [cat] [on|off]", "View or toggle agent tool access (terminal, python, web, files)")
         table.add_row("/compress [on|off|stats]", "Toggle or inspect Headroom context compression")
         table.add_row("/persona [reload|edit]", "View, reload, or manage personality.md")
         table.add_row("/buffer", "Inspect current sliding-window message buffer")
@@ -560,6 +561,58 @@ class InteractiveCLI:
             f"[green]Space Reclaimed:[/green] {res['bytes_reclaimed']:,} bytes\n"
         )
 
+    def handle_tools_command(self, arg: str) -> None:
+        """Inspect or toggle individual agent tool permissions."""
+        parts = arg.strip().split()
+        if not parts:
+            perms = self.assistant.get_tool_permissions()
+            table = Table(
+                title=f"Agent Mode Tool Permissions (Mode: {self.assistant.mode.value.upper()})",
+                box=ROUNDED,
+                header_style="bold cyan",
+            )
+            table.add_column("Category", style="bold white", width=12)
+            table.add_column("Status", justify="center", width=10)
+            table.add_column("Tools Included", style="cyan", width=36)
+            table.add_column("Description", style="dim")
+            table.add_column("Toggle Command", style="yellow")
+
+            meta = [
+                ("terminal", "run_terminal_command", "Local shell execution, git, command-line inspection"),
+                ("python", "python_interpreter", "Isolated Python REPL, math, data processing, algorithms"),
+                ("web", "web_search, fetch_web_page", "Live web search and text content extraction"),
+                ("files", "read_file, write_file, list_directory", "Workspace file system reading, writing, and listing"),
+            ]
+
+            for cat, tools, desc in meta:
+                enabled = perms.get(cat, False)
+                status = "[bold green]ENABLED[/bold green]" if enabled else "[bold red]DISABLED[/bold red]"
+                toggle_cmd = f"/tools {cat} {'off' if enabled else 'on'}"
+                table.add_row(cat.capitalize(), status, tools, desc, toggle_cmd)
+
+            self.console.print(table)
+            self.console.print("[dim]Use [bold cyan]/tools <category> [on|off][/bold cyan] to change permissions.[/dim]\n")
+            return
+
+        cat = parts[0].lower()
+        if cat not in ("terminal", "python", "web", "files"):
+            self.console.print(f"[bold red]Unknown tool category '{cat}'.[/bold red] Choose from: terminal, python, web, files.\n")
+            return
+
+        action = parts[1].lower() if len(parts) > 1 else "toggle"
+        if action in ("on", "enable", "true", "1"):
+            self.assistant.set_tool_permission(cat, True)
+            self.console.print(f"[bold green]✓ {cat.capitalize()} access is now ENABLED for the agent.[/bold green]\n")
+        elif action in ("off", "disable", "false", "0"):
+            self.assistant.set_tool_permission(cat, False)
+            self.console.print(f"[bold yellow]✓ {cat.capitalize()} access is now DISABLED for the agent.[/bold yellow]\n")
+        elif action in ("toggle",):
+            new_state = self.assistant.toggle_tool_permission(cat)
+            state_str = "[bold green]ENABLED[/bold green]" if new_state else "[bold yellow]DISABLED[/bold yellow]"
+            self.console.print(f"[bold cyan]✓ {cat.capitalize()} access toggled to:[/bold cyan] {state_str}\n")
+        else:
+            self.console.print(f"[yellow]Usage: /tools {cat} [on|off][/yellow]\n")
+
     async def _cleanup_and_exit(self) -> None:
         """Run session exit hooks (fast background summarization) and cleanly close database."""
         if self.assistant.config.auto_summarize_on_exit:
@@ -649,6 +702,10 @@ class InteractiveCLI:
                 else:
                     toggled = self.assistant.toggle_mode()
                     self.console.print(f"[bold magenta]Toggled mode to:[/bold magenta] {toggled.value.upper()}\n")
+                return True
+
+            elif command in ("/tools", "/tool", "/toggle"):
+                self.handle_tools_command(arg)
                 return True
 
             elif command == "/compress":

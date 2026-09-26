@@ -54,12 +54,13 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
 - **Chat vs. Agent Mode Toggle & Multi-Turn Loop (Phase 7)**:
   - **Mode State Machine**: Runtime flag (`mode = "chat"` vs. `mode = "agent"`), controllable via `/mode [chat|agent]` or `--mode <chat|agent>`.
   - **Chat Mode (Safety & Low Latency)**: Tools are restricted strictly to conversation memory retrieval (`search_past_conversations`, `load_session_transcript`) with single-hop enforcement to preserve minimal latency and prevent looping.
-  - **Agent Mode Action Capabilities**: Exposes action tools:
-    - `run_terminal_command` - Local shell command execution with timeout and output capture
+  - **Agent Mode Action Capabilities & Granular Tool Toggles**:
+    - `run_terminal_command` - Local shell command execution with directory support, timeout, and output capture
     - `python_interpreter` - Standalone Python REPL subshell for calculations and data processing
-    - `read_file` - Inspect local file contents
-    - `write_file` - Create or overwrite local files with automatic directory creation
-    - `list_directory` - Inspect directory entries, types, and sizes
+    - `web_search` & `fetch_web_page` - Live web querying and page content extraction
+    - `read_file`, `write_file`, `list_directory` - Local filesystem access
+    - **Independent Category Toggles**: Each tool capability (`terminal`, `python`, `web`, `files`) has its own independent toggle in `AppConfig` and runtime toggle via `/tools <category> [on|off]`.
+    - **Guardrail Enforcement**: When a tool category is disabled, its schema is omitted from the LLM prompt and runtime execution is rejected at the dispatcher level.
   - **Sequential Multi-Turn Execution Loop**: In agent mode, an autonomous `while` loop executes sequential tool calls across multiple turns until the task is complete, reporting live step progress (`⚡ Agent Step N: Executing ...`) and logging full multi-turn metadata to SQLite.
   - **Multi-Provider Tool Calling**: Full tool-calling and multi-turn execution support across both local Ollama and Google Gemini (`gemini-2.5-flash`).
 - **Optimization, Housekeeping & Maintenance (Phase 8)**:
@@ -93,6 +94,7 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - `/models` - List available models with sizes and parameter counts
   - `/use <model>` - Switch active model dynamically
   - `/mode [chat|agent]` - Inspect or toggle between Chat and Agent modes
+  - `/tools [cat] [on|off]` - View or toggle agent tool access (terminal, python, web, files)
   - `/buffer` - View active context window and character/token breakdown
   - `/clear` - Reset conversation history while preserving system prompt
   - `/system [prompt]` - View or modify pinned system prompt directly

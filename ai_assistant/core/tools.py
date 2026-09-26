@@ -189,7 +189,80 @@ LIST_DIRECTORY_TOOL: Dict[str, Any] = {
 }
 
 
-# --- Tool Groupings ---
+# --- Web Access Tool Schemas ---
+
+WEB_SEARCH_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the live web for recent information, documentation, news, or articles. "
+            "Available in agent mode when web access is enabled."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query or terms to look up on the web.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of search results to return (default: 5).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+FETCH_WEB_PAGE_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "fetch_web_page",
+        "description": (
+            "Fetch and extract readable text content from a web URL. "
+            "Available in agent mode when web access is enabled."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The HTTP or HTTPS URL of the web page to fetch.",
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Optional maximum number of characters to extract (default: 5000).",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+
+# --- Tool Groupings & Category Mappings ---
+
+TOOL_CATEGORIES: Dict[str, List[Dict[str, Any]]] = {
+    "terminal": [RUN_TERMINAL_COMMAND_TOOL],
+    "python": [PYTHON_INTERPRETER_TOOL],
+    "web": [WEB_SEARCH_TOOL, FETCH_WEB_PAGE_TOOL],
+    "files": [READ_FILE_TOOL, WRITE_FILE_TOOL, LIST_DIRECTORY_TOOL],
+    "memory": [SEARCH_PAST_CONVERSATIONS_TOOL, LOAD_SESSION_TRANSCRIPT_TOOL],
+}
+
+TOOL_NAME_TO_CATEGORY: Dict[str, str] = {
+    "run_terminal_command": "terminal",
+    "python_interpreter": "python",
+    "web_search": "web",
+    "fetch_web_page": "web",
+    "read_file": "files",
+    "write_file": "files",
+    "list_directory": "files",
+    "search_past_conversations": "memory",
+    "load_session_transcript": "memory",
+}
 
 CHAT_TOOLS: List[Dict[str, Any]] = [
     SEARCH_PAST_CONVERSATIONS_TOOL,
@@ -204,8 +277,17 @@ AGENT_ACTION_TOOLS: List[Dict[str, Any]] = [
     LIST_DIRECTORY_TOOL,
 ]
 
+WEB_TOOLS: List[Dict[str, Any]] = [
+    WEB_SEARCH_TOOL,
+    FETCH_WEB_PAGE_TOOL,
+]
+
 AGENT_TOOLS: List[Dict[str, Any]] = (
     CHAT_TOOLS + AGENT_ACTION_TOOLS
+)
+
+ALL_AGENT_TOOLS: List[Dict[str, Any]] = (
+    CHAT_TOOLS + AGENT_ACTION_TOOLS + WEB_TOOLS
 )
 
 
@@ -227,9 +309,20 @@ class ToolDispatcher:
                     "code": arguments,
                     "file_path": arguments,
                     "directory_path": arguments,
+                    "url": arguments,
                 }
         else:
             args = arguments or {}
+
+        # 0. Check category permission policy
+        cat = TOOL_NAME_TO_CATEGORY.get(tool_name)
+        if cat and cat != "memory" and hasattr(self.assistant, "is_tool_category_enabled"):
+            if not self.assistant.is_tool_category_enabled(cat):
+                return (
+                    f"Error: Access to tool '{tool_name}' is disabled. "
+                    f"The '{cat}' tool capability is currently turned off by permission policy. "
+                    f"Use /tools {cat} on to allow access."
+                )
 
         # 1. Past Conversation Search
         if tool_name == "search_past_conversations":
@@ -278,7 +371,15 @@ class ToolDispatcher:
             if not command:
                 return "Error: command is required."
             cwd = args.get("cwd") or None
-            timeout = float(args.get("timeout", 30))
+            if cwd:
+                cwd = os.path.abspath(os.path.expanduser(str(cwd).strip()))
+                if not os.path.exists(cwd):
+                    return f"Error: Working directory '{cwd}' does not exist."
+                if not os.path.isdir(cwd):
+                    return f"Error: '{cwd}' is a file, not a directory."
+
+            default_timeout = getattr(getattr(self.assistant, "config", None), "terminal_timeout", 30.0)
+            timeout = float(args.get("timeout") or default_timeout)
 
             try:
                 proc = await asyncio.create_subprocess_shell(
@@ -286,10 +387,30 @@ class ToolDispatcher:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
+                    start_new_session=True if os.name == "posix" else False,
                 )
-                stdout_data, stderr_data = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
+                try:
+                    stdout_data, stderr_data = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    if os.name == "posix":
+                        import signal
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except (ProcessLookupError, OSError):
+                            try:
+                                proc.kill()
+                            except ProcessLookupError:
+                                pass
+                    else:
+                        try:
+                            proc.kill()
+                        except ProcessLookupError:
+                            pass
+                    await proc.wait()
+                    return f"Error: Command timed out after {timeout} seconds."
+
                 stdout_str = stdout_data.decode("utf-8", errors="replace").strip()
                 stderr_str = stderr_data.decode("utf-8", errors="replace").strip()
 
@@ -306,12 +427,6 @@ class ToolDispatcher:
                 if stderr_str:
                     res_lines.append(f"STDERR:\n{stderr_str}")
                 return "\n".join(res_lines)
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                return f"Error: Command timed out after {timeout} seconds."
             except Exception as e:
                 return f"Error executing command: {e}"
 
@@ -428,6 +543,73 @@ class ToolDispatcher:
                 return "\n".join(lines)
             except Exception as e:
                 return f"Error listing directory '{dir_path}': {e}"
+
+        # 8. Web Search
+        elif tool_name == "web_search":
+            query = str(args.get("query", "")).strip()
+            if not query:
+                return "Error: query is required."
+            max_results = int(args.get("max_results", 5))
+
+            try:
+                import httpx
+                import re
+                import urllib.parse
+
+                encoded_q = urllib.parse.quote_plus(query)
+                search_url = f"https://html.duckduckgo.com/html/?q={encoded_q}"
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    resp = await client.post(
+                        search_url,
+                        data={"q": query},
+                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                    )
+                    html = resp.text
+                    snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', html, flags=re.DOTALL)
+                    titles = re.findall(r'<a class="result__url[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, flags=re.DOTALL)
+
+                    results = []
+                    for i in range(min(max_results, len(snippets))):
+                        clean_snip = re.sub(r"<[^>]+>", "", snippets[i]).strip()
+                        url_item = titles[i][0] if i < len(titles) else ""
+                        results.append(f"{i+1}. {clean_snip}\n   URL: {url_item}")
+
+                    if results:
+                        return f"Web search results for '{query}':\n\n" + "\n\n".join(results)
+                    return f"No web search results found for '{query}'."
+            except Exception as e:
+                return f"Error executing web search for '{query}': {e}"
+
+        # 9. Fetch Web Page
+        elif tool_name == "fetch_web_page":
+            url = str(args.get("url", "")).strip()
+            if not url:
+                return "Error: url is required."
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            max_chars = int(args.get("max_chars", 5000))
+
+            try:
+                import httpx
+                import re
+
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    resp = await client.get(
+                        url,
+                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                    )
+                    resp.raise_for_status()
+                    html_text = resp.text
+                    clean_html = re.sub(
+                        r"<(script|style)[^>]*>.*?</\1>", "", html_text, flags=re.DOTALL | re.IGNORECASE
+                    )
+                    plain_text = re.sub(r"<[^>]+>", " ", clean_html)
+                    plain_text = re.sub(r"\s+", " ", plain_text).strip()
+                    if len(plain_text) > max_chars:
+                        plain_text = plain_text[:max_chars] + f"\n...[Truncated after {max_chars} chars]"
+                    return f"Content of {url}:\n{plain_text}"
+            except Exception as e:
+                return f"Error fetching web page '{url}': {e}"
 
         else:
             return f"Error: Tool '{tool_name}' is not recognized."

@@ -92,6 +92,8 @@ class AIAssistant:
         self.archive = archive or SQLiteArchive(
             db_path=self.config.db_path,
             embedding_dim=self.config.embedding_dim,
+            compress_large_messages=getattr(self.config, "compress_message_bodies", False),
+            compression_threshold_bytes=getattr(self.config, "message_compression_threshold", 1024),
         )
         self.summarizer = SessionSummarizer(archive=self.archive, provider=self.provider)
         self.tool_dispatcher = ToolDispatcher(self)
@@ -608,6 +610,31 @@ class AIAssistant:
             session_id=session_id,
             include_system=include_system,
             archive=self.archive,
+        )
+
+    def run_maintenance(self, vacuum: bool = True) -> Dict[str, Any]:
+        """Perform database health check, WAL checkpoint, query planner optimization, and optional VACUUM."""
+        return self.archive.run_maintenance(vacuum=vacuum)
+
+    def vacuum(self) -> Dict[str, Any]:
+        """Execute SQLite VACUUM to defragment B-trees and reclaim disk space."""
+        return self.archive.vacuum()
+
+    def get_storage_stats(self) -> Dict[str, Any]:
+        """Retrieve database disk footprint, page counts, WAL size, and record counts."""
+        return self.archive.get_storage_stats()
+
+    def archive_sessions(
+        self,
+        older_than_days: Optional[int] = None,
+        session_ids: Optional[List[str]] = None,
+        archive_db_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Archive inactive sessions to an archive database and vacuum main database."""
+        return self.archive.archive_sessions(
+            older_than_days=older_than_days,
+            session_ids=session_ids,
+            archive_db_path=archive_db_path,
         )
 
     def close(self) -> None:

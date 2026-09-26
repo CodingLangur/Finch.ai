@@ -5,4 +5,4 @@ psutil>=5.9.0
 headroom-ai>=0.38.0
 sqlite-vec>=0.1.9
 python-dotenv>=1.0.0
-
+zstandard>=0.23.0

@@ -96,6 +96,12 @@ class AppConfig:
     rrf_k: int = field(
         default_factory=lambda: int(os.getenv("RRF_K", "60"))
     )
+    compress_message_bodies: bool = field(
+        default_factory=lambda: os.getenv("COMPRESS_MESSAGE_BODIES", "false").lower() in ("true", "1", "yes")
+    )
+    message_compression_threshold: int = field(
+        default_factory=lambda: int(os.getenv("MESSAGE_COMPRESSION_THRESHOLD", "1024"))
+    )
 
 
 # Global singleton configuration

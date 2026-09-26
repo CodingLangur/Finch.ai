@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .compression import ColumnCompressor, default_column_compressor
+
 
 def utc_now_iso() -> str:
     """Return current UTC time in ISO 8601 string format."""
@@ -44,9 +46,19 @@ class MessageRecord:
 class SQLiteArchive:
     """Relational SQLite storage manager for chat sessions and conversational history."""
 
-    def __init__(self, db_path: str = "conversations.db", embedding_dim: int = 768):
+    def __init__(
+        self,
+        db_path: str = "conversations.db",
+        embedding_dim: int = 768,
+        compress_large_messages: bool = False,
+        compression_threshold_bytes: int = 1024,
+        compressor: Optional[ColumnCompressor] = None,
+    ):
         self.db_path = db_path
         self.embedding_dim = embedding_dim
+        self.compress_large_messages = compress_large_messages
+        self.compression_threshold_bytes = compression_threshold_bytes
+        self.compressor = compressor or default_column_compressor
         self._lock = threading.RLock()
         self._vec_enabled: bool = False
 
@@ -383,7 +395,20 @@ class SQLiteArchive:
     ) -> int:
         """Persist a conversation turn to the messages table and touch session updated_at."""
         now = timestamp or utc_now_iso()
-        meta_json = json.dumps(metadata or {})
+        content_to_store = content
+        effective_meta = dict(metadata or {})
+
+        is_compressed = False
+        if self.compress_large_messages and len(content.encode("utf-8")) >= self.compression_threshold_bytes:
+            comp_content, was_comp = self.compressor.compress_text(content)
+            if was_comp:
+                content_to_store = comp_content
+                is_compressed = True
+                effective_meta["compressed"] = True
+                effective_meta["algo"] = self.compressor.algorithm
+                effective_meta["raw_chars"] = len(content)
+
+        meta_json = json.dumps(effective_meta)
 
         with self._lock:
             conn = self._get_connection()
@@ -393,9 +418,24 @@ class SQLiteArchive:
                     INSERT INTO messages (session_id, role, content, thinking, tokens, timestamp, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (session_id, role, content, thinking, tokens, now, meta_json),
+                    (session_id, role, content_to_store, thinking, tokens, now, meta_json),
                 )
                 msg_id = cursor.lastrowid
+
+                # If stored in compressed form, update FTS index with uncompressed plain text
+                # so full-text lexical search continues to index keywords transparently.
+                if is_compressed:
+                    try:
+                        conn.execute(
+                            "INSERT INTO messages_fts(messages_fts, rowid, content, role, session_id) VALUES('delete', ?, ?, ?, ?);",
+                            (msg_id, content_to_store, role, session_id),
+                        )
+                        conn.execute(
+                            "INSERT INTO messages_fts(rowid, content, role, session_id) VALUES (?, ?, ?, ?);",
+                            (msg_id, content, role, session_id),
+                        )
+                    except Exception:
+                        pass
 
                 # Update parent session updated_at timestamp
                 conn.execute(
@@ -437,12 +477,13 @@ class SQLiteArchive:
                     meta = json.loads(row["metadata"])
                 except Exception:
                     meta = {}
+                decomp_content = self.compressor.decompress_text(row["content"])
                 messages.append(
                     MessageRecord(
                         id=row["id"],
                         session_id=row["session_id"],
                         role=row["role"],
-                        content=row["content"],
+                        content=decomp_content,
                         thinking=row["thinking"],
                         tokens=row["tokens"],
                         timestamp=row["timestamp"],
@@ -541,17 +582,37 @@ class SQLiteArchive:
 
             results = []
             for r in rows:
+                decomp_content = self.compressor.decompress_text(r["content"])
+                snippet_text = r["snippet"]
+                if (
+                    self.compressor.is_compressed(r["content"])
+                    or self.compressor.is_compressed(snippet_text)
+                    or "ZSTD" in snippet_text
+                    or "ZLIB" in snippet_text
+                ):
+                    clean_preview = decomp_content.replace("\n", " ").strip()
+                    q_lower = cleaned.lower()
+                    p_lower = clean_preview.lower()
+                    idx = p_lower.find(q_lower)
+                    if idx >= 0:
+                        start_idx = max(0, idx - 40)
+                        end_idx = min(len(clean_preview), idx + len(cleaned) + 40)
+                        prefix = "..." if start_idx > 0 else ""
+                        suffix = "..." if end_idx < len(clean_preview) else ""
+                        snippet_text = f"{prefix}{clean_preview[start_idx:end_idx]}{suffix}"
+                    else:
+                        snippet_text = clean_preview[:120] + "..." if len(clean_preview) > 120 else clean_preview
                 results.append(
                     {
                         "message_id": r["id"],
                         "session_id": r["session_id"],
                         "session_title": r["session_title"] or "Untitled Session",
                         "role": r["role"],
-                        "content": r["content"],
+                        "content": decomp_content,
                         "thinking": r["thinking"],
                         "tokens": r["tokens"],
                         "timestamp": r["timestamp"],
-                        "snippet": r["snippet"],
+                        "snippet": snippet_text,
                         "rank": float(r["rank"]),
                     }
                 )
@@ -669,10 +730,257 @@ class SQLiteArchive:
             except Exception:
                 return []
 
+    # =========================================================================
+    # Phase 8: SQLite Housekeeping & Archival Maintenance Routines
+    # =========================================================================
+
+    def checkpoint(self) -> Dict[str, Any]:
+        """Checkpoint WAL pages into the database file and truncate WAL."""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            row = cursor.fetchone()
+            return {
+                "busy": row[0] if row else 0,
+                "log": row[1] if row else 0,
+                "checkpointed": row[2] if row else 0,
+            }
+
+    def optimize(self) -> None:
+        """Run PRAGMA optimize to update SQLite query planner index statistics."""
+        with self._lock:
+            conn = self._get_connection()
+            conn.execute("PRAGMA optimize;")
+
+    def integrity_check(self) -> str:
+        """Run PRAGMA integrity_check to verify database file health."""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA integrity_check;")
+            row = cursor.fetchone()
+            return row[0] if row else "ok"
+
+    def get_storage_stats(self) -> Dict[str, Any]:
+        """Collect disk usage, page counts, WAL size, and record counts."""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("PRAGMA page_size;")
+            page_size = cursor.fetchone()[0]
+
+            cursor.execute("PRAGMA page_count;")
+            page_count = cursor.fetchone()[0]
+
+            cursor.execute("PRAGMA freelist_count;")
+            freelist_count = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM sessions;")
+            session_count = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM messages;")
+            message_count = cursor.fetchone()[0]
+
+            vec_count = 0
+            if getattr(self, "_vec_enabled", False):
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM sessions_vec;")
+                    vec_count = cursor.fetchone()[0]
+                except Exception:
+                    pass
+
+            file_size = 0
+            wal_size = 0
+            if self.db_path != ":memory:" and os.path.exists(self.db_path):
+                file_size = os.path.getsize(self.db_path)
+                wal_path = f"{self.db_path}-wal"
+                if os.path.exists(wal_path):
+                    wal_size = os.path.getsize(wal_path)
+
+            return {
+                "db_path": self.db_path,
+                "file_size_bytes": file_size,
+                "wal_size_bytes": wal_size,
+                "total_size_bytes": file_size + wal_size,
+                "page_size": page_size,
+                "page_count": page_count,
+                "freelist_count": freelist_count,
+                "reclaimable_bytes": freelist_count * page_size,
+                "session_count": session_count,
+                "message_count": message_count,
+                "vec_entry_count": vec_count,
+            }
+
+    def vacuum(self) -> Dict[str, Any]:
+        """Execute SQLite VACUUM to defragment B-trees and reclaim disk space."""
+        with self._lock:
+            stats_before = self.get_storage_stats()
+            conn = self._get_connection()
+            # VACUUM cannot be run inside an open transaction
+            conn.commit()
+            conn.execute("VACUUM;")
+            stats_after = self.get_storage_stats()
+
+            reclaimed = max(0, stats_before["file_size_bytes"] - stats_after["file_size_bytes"])
+            return {
+                "bytes_before": stats_before["file_size_bytes"],
+                "bytes_after": stats_after["file_size_bytes"],
+                "bytes_reclaimed": reclaimed,
+                "pages_before": stats_before["page_count"],
+                "pages_after": stats_after["page_count"],
+                "freelist_before": stats_before["freelist_count"],
+                "freelist_after": stats_after["freelist_count"],
+            }
+
+    def run_maintenance(self, vacuum: bool = True) -> Dict[str, Any]:
+        """Perform end-to-end database housekeeping: WAL checkpoint, integrity check, PRAGMA optimize, and VACUUM."""
+        with self._lock:
+            stats_before = self.get_storage_stats()
+            ckpt = self.checkpoint()
+            integrity = self.integrity_check()
+            self.optimize()
+            vac_res = None
+            if vacuum:
+                vac_res = self.vacuum()
+
+            stats_after = self.get_storage_stats()
+            bytes_saved = max(0, stats_before["total_size_bytes"] - stats_after["total_size_bytes"])
+
+            return {
+                "status": "success" if integrity == "ok" else "warning",
+                "integrity": integrity,
+                "checkpoint": ckpt,
+                "vacuum": vac_res,
+                "total_bytes_before": stats_before["total_size_bytes"],
+                "total_bytes_after": stats_after["total_size_bytes"],
+                "bytes_reclaimed": bytes_saved,
+                "storage_stats": stats_after,
+            }
+
+    def archive_sessions(
+        self,
+        older_than_days: Optional[int] = None,
+        session_ids: Optional[List[str]] = None,
+        archive_db_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Move selected inactive or older sessions and their messages into an archive database, then vacuum.
+        
+        Args:
+            older_than_days: Archive sessions created more than N days ago.
+            session_ids: Explicit list of session IDs to archive.
+            archive_db_path: Destination SQLite database path (default: <db_name>_archive.db).
+        """
+        with self._lock:
+            stats_before = self.get_storage_stats()
+            all_sessions = self.list_sessions(limit=10000)
+            target_sessions: List[SessionRecord] = []
+
+            now_dt = datetime.now(timezone.utc)
+            for s in all_sessions:
+                should_archive = False
+                if session_ids and s.id in session_ids:
+                    should_archive = True
+                elif older_than_days is not None:
+                    try:
+                        s_dt = datetime.fromisoformat(s.created_at)
+                        age_days = (now_dt - s_dt).total_seconds() / 86400.0
+                        if age_days >= older_than_days:
+                            should_archive = True
+                    except Exception:
+                        pass
+
+                if should_archive:
+                    target_sessions.append(s)
+
+            if not target_sessions:
+                return {
+                    "archived_sessions": 0,
+                    "archived_messages": 0,
+                    "archive_db_path": archive_db_path,
+                    "bytes_reclaimed": 0,
+                }
+
+            # Determine archive database destination
+            if not archive_db_path:
+                if self.db_path == ":memory:":
+                    archive_db_path = ":memory:"
+                elif self.db_path.endswith(".db"):
+                    archive_db_path = self.db_path[:-3] + "_archive.db"
+                else:
+                    archive_db_path = self.db_path + "_archive"
+
+            # Connect to archive destination
+            dest_archive = SQLiteArchive(
+                db_path=archive_db_path,
+                embedding_dim=self.embedding_dim,
+                compress_large_messages=self.compress_large_messages,
+            )
+
+            total_messages_archived = 0
+
+            try:
+                for s in target_sessions:
+                    # 1. Copy session record
+                    dest_archive.create_session(
+                        session_id=s.id,
+                        title=s.title,
+                        model=s.model,
+                        mode=s.mode,
+                        metadata=s.metadata,
+                    )
+                    if s.summary:
+                        dest_archive.update_session_summary(
+                            session_id=s.id,
+                            title=s.title,
+                            summary=s.summary,
+                            metadata=s.metadata,
+                        )
+
+                    # 2. Copy all messages
+                    msgs = self.get_messages(s.id, include_system=True)
+                    for m in msgs:
+                        dest_archive.add_message(
+                            session_id=s.id,
+                            role=m.role,
+                            content=m.content,
+                            thinking=m.thinking,
+                            tokens=m.tokens,
+                            timestamp=m.timestamp,
+                            metadata=m.metadata,
+                        )
+                        total_messages_archived += 1
+
+                    # 3. Purge session from main database (cascades messages and vectors)
+                    self.delete_session(s.id)
+
+            finally:
+                dest_archive.close()
+
+            # Run housekeeping on main DB to reclaim space
+            self.checkpoint()
+            vac_res = self.vacuum()
+            stats_after = self.get_storage_stats()
+
+            return {
+                "archived_sessions": len(target_sessions),
+                "archived_messages": total_messages_archived,
+                "archive_db_path": archive_db_path,
+                "bytes_reclaimed": vac_res["bytes_reclaimed"],
+                "main_db_size_before": stats_before["total_size_bytes"],
+                "main_db_size_after": stats_after["total_size_bytes"],
+            }
+
     def close(self) -> None:
-        """Close database connection cleanly."""
+        """Close database connection cleanly after running PRAGMA optimize and checkpoint."""
         with self._lock:
             if self._conn is not None:
+                try:
+                    self.optimize()
+                    self.checkpoint()
+                except Exception:
+                    pass
                 try:
                     self._conn.close()
                 except Exception:
@@ -687,3 +995,4 @@ class SQLiteArchive:
 
     def __del__(self) -> None:
         self.close()
+

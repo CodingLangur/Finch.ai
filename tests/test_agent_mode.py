@@ -553,11 +553,16 @@ class TestLiveGeminiAgentModeIntegration(unittest.IsolatedAsyncioTestCase):
         response_tokens: List[str] = []
         tool_notices: List[str] = []
 
-        async for chunk in self.assistant.chat_stream(prompt):
-            if chunk.tool_call_notice:
-                tool_notices.append(chunk.tool_call_notice)
-            if chunk.delta:
-                response_tokens.append(chunk.delta)
+        try:
+            async for chunk in self.assistant.chat_stream(prompt):
+                if chunk.tool_call_notice:
+                    tool_notices.append(chunk.tool_call_notice)
+                if chunk.delta:
+                    response_tokens.append(chunk.delta)
+        except RuntimeError as e:
+            if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                self.skipTest(f"Gemini API rate limit / quota exceeded: {e}")
+            raise
 
         full_answer = "".join(response_tokens).strip()
 

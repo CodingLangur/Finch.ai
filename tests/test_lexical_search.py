@@ -301,9 +301,14 @@ class TestGeminiLexicalSearchIntegration(unittest.IsolatedAsyncioTestCase):
             # Run a chat turn with Gemini
             prompt = "In 1 sentence, define Python's calculate_matrix_norm function."
             response_chunks = []
-            async for chunk in assistant.chat_stream(prompt):
-                if chunk.delta:
-                    response_chunks.append(chunk.delta)
+            try:
+                async for chunk in assistant.chat_stream(prompt):
+                    if chunk.delta:
+                        response_chunks.append(chunk.delta)
+            except RuntimeError as e:
+                if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                    self.skipTest(f"Gemini API rate limit / quota exceeded: {e}")
+                raise
 
             full_response = "".join(response_chunks)
             self.assertTrue(len(full_response) > 0)

@@ -85,6 +85,9 @@ class InteractiveCLI:
         table.add_row("/persona [reload|edit]", "View, reload, or manage personality.md")
         table.add_row("/buffer", "Inspect current sliding-window message buffer")
         table.add_row("/clear", "Clear message history (retains system prompt)")
+        table.add_row("/vacuum, /maintenance", "Run SQLite housekeeping (checkpoint, optimize, VACUUM)")
+        table.add_row("/storage", "Inspect database disk footprint, page count, and WAL size")
+        table.add_row("/archive [days]", "Archive inactive sessions older than N days to archive DB")
         table.add_row("/system [text]", "View or update the pinned system prompt directly")
         table.add_row("/help", "Show this help table")
         table.add_row("/exit, /quit", "Exit session (auto-summarizes unless empty)")
@@ -478,7 +481,84 @@ class InteractiveCLI:
                 box=ROUNDED,
             )
         )
+    def handle_maintenance_command(self) -> None:
+        """Execute database maintenance (WAL checkpoint, integrity check, PRAGMA optimize, VACUUM)."""
+        with self.console.status("[bold cyan]Running SQLite maintenance and vacuum...[/bold cyan]"):
+            res = self.assistant.run_maintenance(vacuum=True)
+
+        stats = res.get("storage_stats", {})
+        grid = Table.grid(padding=1)
+        grid.add_column(style="cyan", justify="left")
+        grid.add_column(style="bold white", justify="left")
+
+        grid.add_row("Database File:", stats.get("db_path", ""))
+        grid.add_row("Integrity Check:", f"[bold green]{res.get('integrity', 'ok')}[/bold green]")
+        grid.add_row("WAL Checkpoint:", f"log={res.get('checkpoint', {}).get('log', 0)}, checkpointed={res.get('checkpoint', {}).get('checkpointed', 0)}")
+        grid.add_row("Size Before:", f"{res.get('total_bytes_before', 0):,} bytes")
+        grid.add_row("Size After:", f"{res.get('total_bytes_after', 0):,} bytes")
+        grid.add_row("Space Reclaimed:", f"[bold green]{res.get('bytes_reclaimed', 0):,} bytes[/bold green]")
+        grid.add_row("Total Sessions:", str(stats.get("session_count", 0)))
+        grid.add_row("Total Messages:", str(stats.get("message_count", 0)))
+
+        panel = Panel(
+            grid,
+            title="[bold green]🛠️ Database Maintenance & VACUUM Complete[/bold green]",
+            border_style="green",
+            box=ROUNDED,
+        )
+        self.console.print(panel)
         self.console.print()
+
+    def handle_storage_command(self) -> None:
+        """Display database disk usage, pages, and record statistics."""
+        stats = self.assistant.get_storage_stats()
+
+        grid = Table.grid(padding=1)
+        grid.add_column(style="cyan", justify="left")
+        grid.add_column(style="bold white", justify="left")
+
+        file_bytes = stats.get("file_size_bytes", 0)
+        grid.add_row("Database Path:", stats.get("db_path", ""))
+        grid.add_row("DB File Size:", f"{file_bytes:,} bytes ({file_bytes/1024:.1f} KB)")
+        grid.add_row("WAL File Size:", f"{stats.get('wal_size_bytes', 0):,} bytes")
+        grid.add_row("Page Size:", f"{stats.get('page_size', 0)} bytes")
+        grid.add_row("Page Count:", f"{stats.get('page_count', 0)}")
+        grid.add_row("Freelist Pages:", f"{stats.get('freelist_count', 0)} ({stats.get('reclaimable_bytes', 0):,} reclaimable bytes)")
+        grid.add_row("Sessions Stored:", str(stats.get("session_count", 0)))
+        grid.add_row("Messages Stored:", str(stats.get("message_count", 0)))
+        if stats.get("vec_entry_count"):
+            grid.add_row("Vector Embeddings:", str(stats.get("vec_entry_count", 0)))
+
+        panel = Panel(
+            grid,
+            title="[bold cyan]📊 Storage & Database Statistics[/bold cyan]",
+            border_style="cyan",
+            box=ROUNDED,
+        )
+        self.console.print(panel)
+        self.console.print()
+
+    def handle_archive_command(self, arg: str) -> None:
+        """Archive older sessions to an archive database file and vacuum main database."""
+        days = 30
+        if arg:
+            try:
+                days = int(arg.strip())
+            except ValueError:
+                days = 30
+
+        with self.console.status(f"[bold cyan]Archiving sessions older than {days} days...[/bold cyan]"):
+            res = self.assistant.archive_sessions(older_than_days=days)
+
+        if res["archived_sessions"] == 0:
+            self.console.print(f"[yellow]No sessions found older than {days} days to archive.[/yellow]\n")
+            return
+
+        self.console.print(
+            f"[bold green]✓ Successfully archived {res['archived_sessions']} session(s) and {res['archived_messages']} message(s)![/bold green]\n"
+            f"[cyan]Archive Database:[/cyan] {res['archive_db_path']}\n"
+            f"[green]Space Reclaimed:[/green] {res['bytes_reclaimed']:,} bytes\n"
+        )
 
     async def _cleanup_and_exit(self) -> None:
         """Run session exit hooks (fast background summarization) and cleanly close database."""
@@ -586,6 +666,18 @@ class InteractiveCLI:
             elif command == "/clear":
                 self.assistant.clear_history()
                 self.console.print("[bold green]Conversation history cleared (system prompt preserved).[/bold green]\n")
+                return True
+
+            elif command in ("/vacuum", "/maintenance"):
+                self.handle_maintenance_command()
+                return True
+
+            elif command in ("/storage", "/db"):
+                self.handle_storage_command()
+                return True
+
+            elif command == "/archive":
+                self.handle_archive_command(arg)
                 return True
 
             elif command == "/system":

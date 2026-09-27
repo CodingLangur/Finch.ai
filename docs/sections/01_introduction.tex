@@ -15,7 +15,7 @@ Modern Large Language Model (LLM) interfaces often face a trilemma between compu
 Finch.ai provides the following primary features:
 
 \begin{itemize}
-    \item \textbf{Dual Provider Infrastructure}: Native asynchronous client integrations with \texttt{httpx} streaming for local Ollama endpoints (default model: \texttt{Gemma4-26000-ctx:latest}) and Google Gemini endpoints (\texttt{gemini-2.5-flash}, \texttt{gemini-2.5-pro}) over Server-Sent Events (SSE).
+    \item \textbf{Multi-Provider Infrastructure}: Native asynchronous client integrations with \texttt{httpx} streaming for local Ollama runtimes (compatible with any Ollama model such as \texttt{llama3.2}, \texttt{mistral}, or custom modelfiles), Google Gemini endpoints (\texttt{gemini-2.5-flash}, \texttt{gemini-2.5-pro}), and any \textbf{OpenAI-Compatible API} (vLLM, LM Studio, Groq, Together AI, OpenRouter, DeepSeek, LocalAI) over Server-Sent Events (SSE).
     \item \textbf{Headroom Context Compression Pipeline}: Seamless token-reduction middleware intercepting tool outputs, structured JSON payloads, source code ASTs, and conversational turns before LLM ingestion. It achieves 15\% to 60\%+ token reduction while guaranteeing byte-level fidelity for pinned system instructions.
     \item \textbf{Sliding-Window Memory Buffer}: In-memory FIFO context tracking maintaining an active dialogue window with deterministic system prompt pinning.
     \item \textbf{Dynamic Persona Adaptation}: File-first system prompt loading via \texttt{personality.md}, runtime model adaptation using validated XML extraction (\texttt{<personality\_update>}), and atomic file backup mechanisms.

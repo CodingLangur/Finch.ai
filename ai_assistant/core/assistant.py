@@ -9,6 +9,7 @@ from ..persona.manager import PersonaManager
 from ..providers.base import BaseLLMProvider, ModelInfo, StreamChunk
 from ..providers.ollama_provider import OllamaProvider
 from ..providers.gemini_provider import GeminiProvider
+from ..providers.openai_provider import OpenAICompatibleProvider
 from ..storage.sqlite_archive import SQLiteArchive, SessionRecord, MessageRecord
 from ..storage.session_summarizer import SessionSummarizer
 from ..storage.search import (
@@ -79,6 +80,13 @@ class AIAssistant:
             self.provider = GeminiProvider(
                 api_key=self.config.gemini_api_key,
                 timeout=self.config.request_timeout,
+            )
+        elif self.config.provider.lower() in ("openai", "openai_compatible", "compatible"):
+            self.provider = OpenAICompatibleProvider(
+                api_key=self.config.openai_api_key,
+                base_url=self.config.openai_base_url,
+                timeout=self.config.request_timeout,
+                default_model=self.config.openai_default_model,
             )
         else:
             self.provider = OllamaProvider(

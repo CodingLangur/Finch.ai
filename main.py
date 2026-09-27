@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
         "--model",
         type=str,
         default=None,
-        help="Ollama model name (default: Gemma4-26000-ctx:latest)",
+        help="Model name to use for inference (e.g. llama3.2, gpt-4o-mini, gemini-2.5-flash)",
     )
     parser.add_argument(
         "--host",
@@ -45,9 +45,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--provider",
         type=str,
-        choices=["ollama", "gemini"],
+        choices=["ollama", "gemini", "openai", "openai_compatible"],
         default=None,
-        help="LLM Provider to use (default: from .env or gemini/ollama)",
+        help="LLM Provider to use (default: from .env, ollama, gemini, or openai)",
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Custom base URL for OpenAI-compatible or Ollama endpoint",
+    )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API Key for Gemini or OpenAI-compatible provider",
     )
     parser.add_argument(
         "--db",
@@ -78,6 +90,18 @@ async def main_async() -> None:
         config.provider = args.provider
         if args.provider == "gemini" and not args.model:
             config.default_model = config.gemini_default_model
+        elif args.provider in ("openai", "openai_compatible") and not args.model:
+            config.default_model = config.openai_default_model
+    if args.base_url:
+        if config.provider in ("openai", "openai_compatible"):
+            config.openai_base_url = args.base_url
+        else:
+            config.ollama_host = args.base_url
+    if args.api_key:
+        if config.provider == "gemini":
+            config.gemini_api_key = args.api_key
+        else:
+            config.openai_api_key = args.api_key
     if args.host:
         config.ollama_host = args.host
     if args.model:

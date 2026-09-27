@@ -101,11 +101,14 @@ Table~\ref{tab:env_vars} catalogs all environment configuration variables suppor
 \toprule
 \textbf{Variable} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
 \midrule
-\texttt{DEFAULT\_PROVIDER} & string & \texttt{ollama} & Default backend (\texttt{ollama} / \texttt{gemini}). \\
+\texttt{DEFAULT\_PROVIDER} & string & \texttt{ollama} & Default backend (\texttt{ollama} / \texttt{gemini} / \texttt{openai}). \\
 \texttt{GEMINI\_API\_KEY} & string & \texttt{None} & Google Gemini API authentication key. \\
 \texttt{GEMINI\_DEFAULT\_MODEL} & string & \texttt{gemini-2.5-flash} & Default Gemini model variant. \\
+\texttt{OPENAI\_API\_KEY} & string & \texttt{None} & OpenAI or compatible API authentication key. \\
+\texttt{OPENAI\_BASE\_URL} & string & \texttt{api.openai.com/v1} & Base URL for OpenAI-compatible endpoint. \\
+\texttt{OPENAI\_DEFAULT\_MODEL} & string & \texttt{gpt-4o-mini} & Default OpenAI-compatible model name. \\
 \texttt{OLLAMA\_HOST} & string & \texttt{http://localhost:11434} & Ollama local server URL. \\
-\texttt{DEFAULT\_MODEL} & string & \texttt{Gemma4-26000-ctx:latest} & Default Ollama model name. \\
+\texttt{DEFAULT\_MODEL} & string & \texttt{llama3.2:latest} & Default model name. \\
 \texttt{REQUEST\_TIMEOUT} & float & \texttt{120.0} & HTTP request timeout in seconds. \\
 \texttt{WINDOW\_SIZE} & integer & \texttt{8} & Sliding window capacity in messages. \\
 \texttt{DEFAULT\_MODE} & string & \texttt{chat} & Initial mode (\texttt{chat} or \texttt{agent}). \\

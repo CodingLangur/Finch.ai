@@ -24,22 +24,38 @@ class AppConfig:
     ollama_host: str = field(
         default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434")
     )
+    openai_api_key: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENAI_API_KEY")
+    )
+    openai_base_url: str = field(
+        default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    )
+    openai_default_model: str = field(
+        default_factory=lambda: os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4o-mini")
+    )
     default_model: str = field(
         default_factory=lambda: os.getenv(
             "DEFAULT_MODEL",
             "gemini-2.5-flash"
             if os.getenv("DEFAULT_PROVIDER", "ollama").lower() == "gemini"
-            else os.getenv("OLLAMA_DEFAULT_MODEL", "Gemma4-26000-ctx:latest"),
+            else "gpt-4o-mini"
+            if os.getenv("DEFAULT_PROVIDER", "ollama").lower() in ("openai", "openai_compatible", "compatible")
+            else os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.2:latest"),
         )
     )
 
     @property
     def effective_model(self) -> str:
         """Return provider-appropriate default model."""
-        if self.provider.lower() == "gemini":
+        prov = self.provider.lower()
+        if prov == "gemini":
             if "gemini" in self.default_model.lower():
                 return self.default_model
             return self.gemini_default_model
+        if prov in ("openai", "openai_compatible", "compatible"):
+            if self.default_model and not any(k in self.default_model.lower() for k in ("gemini", "gemma", "nomic")):
+                return self.default_model
+            return self.openai_default_model
         return self.default_model
     window_size: int = field(
         default_factory=lambda: int(os.getenv("WINDOW_SIZE", "8"))

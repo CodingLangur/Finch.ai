@@ -46,13 +46,16 @@ Finch.ai can be launched with custom operational flags from the terminal:
 
 \begin{lstlisting}[language=bash]
 # Launch with custom model and window size
-python main.py --model Gemma4-26000-ctx:latest --window-size 12
+python main.py --model llama3.2:latest --window-size 12
 
 # Launch directly in Agent Mode
 python main.py --mode agent
 
 # Use Google Gemini provider
 python main.py --provider gemini --model gemini-2.5-flash
+
+# Use OpenAI-compatible provider (e.g. vLLM, LM Studio, Groq, OpenAI)
+python main.py --provider openai --model gpt-4o-mini
 
 # Execute a one-off non-interactive query and exit
 python main.py -q "Explain the benefits of WAL mode in SQLite."
@@ -69,7 +72,9 @@ Table~\ref{tab:cli_flags} summarizes the supported command-line arguments.
 \midrule
 \texttt{--model} & In config & Model name to use for inference \\
 \texttt{--host} & \texttt{http://localhost:11434} & Host URL for the Ollama inference server \\
-\texttt{--provider} & \texttt{ollama} & Model provider (\texttt{ollama} or \texttt{gemini}) \\
+\texttt{--provider} & \texttt{ollama} & Model provider (\texttt{ollama}, \texttt{gemini}, \texttt{openai}) \\
+\texttt{--base-url} & \texttt{None} & Custom base URL for OpenAI-compatible or Ollama server \\
+\texttt{--api-key} & \texttt{None} & API Key for Gemini or OpenAI-compatible provider \\
 \texttt{--mode} & \texttt{chat} & Assistant mode (\texttt{chat} or \texttt{agent}) \\
 \texttt{--window-size} & \texttt{8} & Sliding window message capacity \\
 \texttt{--no-compression} & \texttt{False} & Disable Headroom context compression \\

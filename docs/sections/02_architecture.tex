@@ -60,6 +60,7 @@ The repository codebase is strictly partitioned into single-responsibility packa
     \begin{itemize}
         \item \texttt{ollama\_provider.py}: Interacts with local Ollama daemon via non-blocking \texttt{httpx.AsyncClient} with tool call parsing.
         \item \texttt{gemini\_provider.py}: Interacts with Google Gemini REST endpoints via Server-Sent Events (SSE) and Gemini tool-calling payloads.
+        \item \texttt{openai\_provider.py}: Client for any OpenAI-compatible API endpoint (OpenAI, vLLM, LM Studio, Groq, DeepSeek, etc.) supporting SSE streaming and tool calling.
     \end{itemize}
     \item[\texttt{ai\_assistant.memory}:]
     \begin{itemize}

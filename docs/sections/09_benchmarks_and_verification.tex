@@ -67,7 +67,7 @@ Short Conversational Message & 450 B & 450 B & 0.00\% (Bypassed) & 0.00 ms \\
 Across code and tool outputs, Zstandard compression yields \textbf{87\% to 92\% space savings} with negligible decompression latency ($< 0.05$ milliseconds), ensuring seamless interactive recall.
 
 \section{Automated Test Suite Architecture}
-Finch.ai maintains a comprehensive unit and integration test suite organized under \texttt{tests/}. The test suite encompasses 127 automated tests verifying every subsystem:
+Finch.ai maintains a comprehensive unit and integration test suite organized under \texttt{tests/}. The test suite encompasses 136 automated tests verifying every subsystem:
 
 \begin{enumerate}
     \item \texttt{test\_agent\_mode.py}: Verifies sequential multi-turn autonomous loops, tool call dispatching, turn limit enforcement, and output accumulation.
@@ -81,10 +81,10 @@ Finch.ai maintains a comprehensive unit and integration test suite organized und
     \item \texttt{test\_session\_summarizer.py}: Verifies automatic 2-sentence summary generation and asynchronous title formulation.
     \item \texttt{test\_sliding\_window.py}: Tests FIFO buffer eviction, pinned prompt stability, and token calculation limits.
     \item \texttt{test\_sqlite\_archive.py}: Validates ACID relational schema, session creation, message cascades, and foreign key constraints.
-    \item \texttt{test\_gemini\_provider.py} \& \texttt{test\_assistant\_core.py}: Tests multi-provider dispatch and orchestrator state machine.
+    \item \texttt{test\_gemini\_provider.py}, \texttt{test\_openai\_provider.py} \& \texttt{test\_assistant\_core.py}: Tests multi-provider dispatch (Ollama, Gemini, OpenAI-compatible) and orchestrator state machine.
 \end{enumerate}
 
-All 127 tests pass with 100\% pass rate under standard Python test runners:
+All 136 tests pass with 100\% pass rate under standard Python test runners:
 \begin{lstlisting}[language=bash]
 python -m unittest discover tests
 \end{lstlisting}

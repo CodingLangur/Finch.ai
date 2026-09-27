@@ -1,6 +1,14 @@
+<div align="center">
+
 # Finch.ai (Chatbot & Agent Foundation)
 
-A high-performance, low-latency AI Assistant interface designed for local Ollama, Google Gemini, and any OpenAI-compatible runtimes with **Headroom Context Compression**, dynamic persona management, SQLite conversation persistence, and modular agent architecture.
+<img src="assets/finch_mascot.jpg" alt="Finch.ai Mascot" width="320" style="border-radius: 12px;" />
+
+<p>
+A high-performance, low-latency AI Assistant interface designed for local Ollama, Google Gemini, and any OpenAI-compatible runtimes with <b>Headroom Context Compression</b>, dynamic persona management, SQLite conversation persistence, and modular agent architecture.
+</p>
+
+</div>
 
 ## Features
 

@@ -23,7 +23,6 @@ lib/
 lib64/
 parts/
 sdist/
-var/
 wheels/
 share/python-wheels/
 *.egg-info/
@@ -45,6 +44,8 @@ venv.bak/
 *.db-wal
 *.db-shm
 conversations.db
+conversations_archive.db
+test_*.db
 personality.md.bak
 
 # Unit test / coverage reports
@@ -61,12 +62,50 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
+# LaTeX auxiliary and intermediate build files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.dvi
+*.fdb_latexmk
+*.fls
+*.glg
+*.glo
+*.gls
+*.idx
+*.ilg
+*.ind
+*.ist
+*.lof
+*.log
+*.lot
+*.nav
+*.nlo
+*.nls
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+*.xdv
+*.upa
+*.upb
+docs/build/
+
+# Allow tracked PDF documentation in docs/
+!docs/*.pdf
+
 # IDEs and editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+*.bak
+*.tmp
+*.temp
 
 # Operating System files
 .DS_Store

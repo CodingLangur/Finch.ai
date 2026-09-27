@@ -1,0 +1,190 @@
+\documentclass[11pt,a4paper,oneside]{report}
+
+% --- Essential Typography & Layout ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{setspace}
+\onehalfspacing
+
+% --- Mathematics & Symbols ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+
+% --- Tables & Lists ---
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\setlist{topsep=2pt, itemsep=2pt, parsep=0pt}
+
+% --- Colors & Graphics ---
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows, positioning, fit, backgrounds, calc}
+
+% --- Color Palette Definition ---
+\definecolor{brandblue}{RGB}{20, 55, 110}
+\definecolor{accentblue}{RGB}{41, 128, 185}
+\definecolor{codebg}{RGB}{248, 249, 250}
+\definecolor{codeborder}{RGB}{220, 224, 230}
+\definecolor{darkgray}{RGB}{60, 64, 67}
+\definecolor{keywordcolor}{RGB}{0, 51, 153}
+\definecolor{stringcolor}{RGB}{163, 21, 21}
+\definecolor{commentcolor}{RGB}{0, 128, 0}
+
+% --- Listings / Code Formatting ---
+\usepackage{listings}
+\lstset{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    breakatwhitespace=true,
+    captionpos=b,
+    commentstyle=\color{commentcolor}\itshape,
+    frame=single,
+    frameround=tttt,
+    framesep=5pt,
+    rulecolor=\color{codeborder},
+    keepspaces=true,
+    keywordstyle=\color{keywordcolor}\bfseries,
+    numbers=none,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    stringstyle=\color{stringcolor},
+    tabsize=4
+}
+
+% Custom SQL dialect highlight
+\lstdefinelanguage{SQL}{
+    keywords={SELECT, FROM, WHERE, INSERT, INTO, VALUES, UPDATE, DELETE, CREATE, TABLE, VIRTUAL, USING, PRAGMA, TRIGGER, AFTER, ON, BEGIN, END, REFERENCES, CASCADE, DEFAULT, PRIMARY, KEY, TEXT, INTEGER, REAL, TIMESTAMP, FLOAT, UNINDEXED},
+    sensitive=false,
+    morecomment=[l]{--},
+    morestring=[b]',
+    morestring=[b]"
+}
+
+% --- Callout Boxes ---
+\usepackage[most]{tcolorbox}
+\newtcolorbox{infobox}[1][]{
+    colback=brandblue!5,
+    colframe=brandblue,
+    fonttitle=\bfseries\sffamily,
+    title={#1},
+    arc=3mm,
+    boxrule=1pt,
+    left=10pt,
+    right=10pt,
+    top=8pt,
+    bottom=8pt
+}
+
+% --- Headers & Footers ---
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{darkgray}Finch.ai Technical Reference Manual}
+\fancyhead[R]{\small\sffamily\color{darkgray}\leftmark}
+\fancyfoot[C]{\sffamily\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% --- Chapter & Section Headings Styling ---
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\sffamily\huge\bfseries\color{brandblue}}
+  {\chaptertitlename\ \thechapter}{16pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-20pt}{20pt}
+
+\titleformat{\section}
+  {\normalfont\sffamily\Large\bfseries\color{brandblue}}
+  {\thesection}{1em}{}
+
+\titleformat{\subsection}
+  {\normalfont\sffamily\large\bfseries\color{accentblue}}
+  {\thesubsection}{1em}{}
+
+% --- Algorithms ---
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% --- Hyperlinks ---
+\usepackage[
+    colorlinks=true,
+    linkcolor=brandblue,
+    citecolor=accentblue,
+    urlcolor=accentblue,
+    bookmarks=true,
+    bookmarksnumbered=true,
+    pdfauthor={Trinath Bhattacharya},
+    pdftitle={Finch.ai Architecture and Technical Reference Manual},
+    pdfsubject={AI Assistant Architecture, Context Compression, and Multi-Turn Agent Operations},
+    pdfkeywords={AI Assistant, Ollama, Gemini, Context Compression, SQLite, FTS5, sqlite-vec, RRF, Agent}
+]{hyperref}
+
+% --- Document Metadata ---
+\title{
+    \vspace{-1.5cm}
+    {\huge\textbf{\color{brandblue}Finch.ai}}\\[0.4cm]
+    {\Large\textbf{Architecture and Technical Reference Manual}}\\[0.3cm]
+    {\normalsize\textsf{A High-Performance, Low-Latency Local/Cloud AI Assistant Runtime with Headroom Context Compression, Dynamic Persona Adaptation, and Autonomous Multi-Turn Agent Operations}}
+}
+
+\author{
+    \textbf{Trinath Bhattacharya}\\
+    \texttt{trinathbe@outlook.com}\\
+    \small System Architect \& Maintainer
+}
+
+\date{September 2026 $\cdot$ Version 1.0}
+
+\begin{document}
+
+% --- Title Page ---
+\maketitle
+\thispagestyle{empty}
+
+% --- Executive Summary / Abstract ---
+\begin{abstract}
+\noindent This document delivers a comprehensive architectural and operational specification for \textbf{Finch.ai}, an open-source, production-grade AI Assistant foundation engineered for local (Ollama) and cloud (Google Gemini) inference runtimes. Finch.ai addresses fundamental constraints in conversational AI systems: token inflation, memory degradation, unconstrained tool loops, and storage bloat. 
+
+Key innovations detailed in this manual include: (1)~\textbf{Headroom Context Compression Middleware}, reducing prompt token volume by 15\% to 60\%+ while mathematically protecting pinned personas and recent dialogue turns; (2)~\textbf{Sub-Millisecond Lexical \& Semantic Hybrid Search}, coupling SQLite FTS5 with \texttt{sqlite-vec} cosine distance embeddings via Reciprocal Rank Fusion ($k=60$); (3)~\textbf{Dual-Mode Operational Engine}, enforcing single-hop conversational recall in Chat Mode and sequential multi-turn tool execution in Agent Mode with fine-grained categorical permissions; and (4)~\textbf{Columnar Storage Compression}, delivering 87\%--92\% disk space savings via transparent Zstandard (\texttt{zstd}) compression. Full benchmark methodologies, test suite architectures (127 verified automated tests), and developer extension patterns are systematically documented.
+\end{abstract}
+
+\vspace{1cm}
+\begin{infobox}[Key Architectural Principles]
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Low Latency First}: Real-time asynchronous streaming with instant Time-to-First-Token (TTFT) metrics.
+    \item \textbf{Guaranteed Determinism}: Pinned persona instructions and recent turns are guaranteed byte-exact preservation.
+    \item \textbf{Autonomous Yet Guarded}: Full sandbox agent tooling with prompt-time schema omission and dispatcher-level policy enforcement.
+    \item \textbf{Self-Contained Persistence}: Serverless, standalone durability via SQLite in WAL mode with automated maintenance routines.
+\end{itemize}
+\end{infobox}
+
+\clearpage
+
+% --- Table of Contents ---
+\tableofcontents
+\clearpage
+
+\listoffigures
+\listoftables
+\clearpage
+
+% --- Chapters Inclusion ---
+\include{sections/01_introduction}
+\include{sections/02_architecture}
+\include{sections/03_context_compression}
+\include{sections/04_storage_and_search}
+\include{sections/05_agent_mode_and_tools}
+\include{sections/06_persona_and_memory}
+\include{sections/07_telemetry_and_maintenance}
+\include{sections/08_cli_and_configuration}
+\include{sections/09_benchmarks_and_verification}
+\include{sections/10_developer_guide}
+
+\end{document}

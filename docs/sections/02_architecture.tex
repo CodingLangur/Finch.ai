@@ -1,0 +1,108 @@
+\chapter{Architectural Foundations and Component Hierarchy}
+\label{chap:architecture}
+
+\section{System Architecture Overview}
+Finch.ai adopts a modular, decoupled architecture organized around an asynchronous core orchestrator (\texttt{AIAssistant}). Figure~\ref{fig:arch_flow} illustrates the component topology and data flow pathways.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=1.3cm and 1.8cm,
+    block/.style={rectangle, draw=blue!70, fill=blue!5, rounded corners, text width=3.8cm, text centered, minimum height=1cm, font=\small\sffamily},
+    core/.style={rectangle, draw=red!70, fill=red!5, rounded corners, text width=4.2cm, text centered, minimum height=1.2cm, font=\bfseries\sffamily},
+    engine/.style={rectangle, draw=green!60!black, fill=green!5, rounded corners, text width=3.6cm, text centered, minimum height=0.9cm, font=\small\sffamily},
+    storage/.style={cylinder, shape border rotate=90, draw=purple!70, fill=purple!5, aspect=0.25, text width=3.2cm, text centered, minimum height=1cm, font=\small\sffamily},
+    arrow/.style={thick, ->, >=stealth}
+]
+    % UI and Core
+    \node (ui) [block] {User Interface\\(\texttt{RichCLI} / \texttt{prompt\_toolkit})};
+    \node (core) [core, below=of ui] {Core Orchestrator\\(\texttt{AIAssistant})};
+    
+    % Memory & Persona
+    \node (memory) [engine, left=of core] {Sliding Buffer\\\& \texttt{HeadroomPipeline}};
+    \node (persona) [engine, above=of memory] {Persona Manager\\(\texttt{personality.md})};
+    
+    % Providers & Tools
+    \node (provider) [engine, right=of core] {LLM Providers\\(\texttt{Ollama} / \texttt{Gemini})};
+    \node (dispatcher) [engine, below=of core] {Tool Dispatcher\\(Permissions \& Sandbox)};
+    
+    % Storage
+    \node (db) [storage, below=of dispatcher] {SQLite Database\\(\texttt{conversations.db})};
+    \node (search) [engine, left=of dispatcher] {Search Engine\\(FTS5 + \texttt{sqlite-vec})};
+
+    % Connectors
+    \draw [arrow] (ui) -- node[right, font=\scriptsize] {Query / Command} (core);
+    \draw [arrow] (core) -- node[above, font=\scriptsize] {Fetch Persona} (persona);
+    \draw [arrow] (core) -- node[above, font=\scriptsize] {Compress Context} (memory);
+    \draw [arrow] (core) -- node[above, font=\scriptsize] {Stream Prompt} (provider);
+    \draw [arrow] (provider) -- node[below, font=\scriptsize] {Tool Calls / Tokens} (core);
+    \draw [arrow] (core) -- node[right, font=\scriptsize] {Dispatch Actions} (dispatcher);
+    \draw [arrow] (dispatcher) -- node[right, font=\scriptsize] {Log Turns / Archive} (db);
+    \draw [arrow] (dispatcher) -- node[above, font=\scriptsize] {Hybrid Queries} (search);
+    \draw [arrow] (search) -- node[below, font=\scriptsize] {Fetch Index} (db);
+    \draw [arrow] (core) -- node[left, font=\scriptsize] {Render Streaming Output} (ui);
+\end{tikzpicture}
+\caption{Finch.ai Subsystem Architecture and Inter-Module Communication}
+\label{fig:arch_flow}
+\end{figure}
+
+\section{Module Decomposition}
+The repository codebase is strictly partitioned into single-responsibility packages under \texttt{ai\_assistant/}:
+
+\begin{description}
+    \item[\texttt{ai\_assistant.config}:] Encapsulates immutable application defaults and dynamic environment variables via \texttt{AppConfig} and \texttt{python-dotenv}. All provider parameters, memory window thresholds, database paths, and tool flags are parsed here.
+    \item[\texttt{ai\_assistant.core}:]
+    \begin{itemize}
+        \item \texttt{assistant.py}: The central state coordinator managing session initialization, prompt assembly, provider dispatch, streaming consumption, and mode switching.
+        \item \texttt{tools.py}: Definitions of JSON Schema tool specifications for both chat retrieval and agent execution, category permission policies, and the async \texttt{ToolDispatcher}.
+    \end{itemize}
+    \item[\texttt{ai\_assistant.providers}:] Abstract base definition (\texttt{BaseLLMProvider}) and concrete asynchronous streaming implementations:
+    \begin{itemize}
+        \item \texttt{ollama\_provider.py}: Interacts with local Ollama daemon via non-blocking \texttt{httpx.AsyncClient} with tool call parsing.
+        \item \texttt{gemini\_provider.py}: Interacts with Google Gemini REST endpoints via Server-Sent Events (SSE) and Gemini tool-calling payloads.
+    \end{itemize}
+    \item[\texttt{ai\_assistant.memory}:]
+    \begin{itemize}
+        \item \texttt{message.py}: Standardized internal data structure \texttt{Message} capturing role, content, thoughts/reasoning traces, token metrics, and tool execution call/result blocks.
+        \item \texttt{sliding\_window.py}: Double-ended bounded queue (\texttt{deque}) managing memory buffers with invariant preservation of system prompts.
+    \end{itemize}
+    \item[\texttt{ai\_assistant.persona}:]
+    \begin{itemize}
+        \item \texttt{manager.py}: Manages file I/O for \texttt{personality.md}, XML tag parsing for self-directed persona adjustments, safety verification, and creation of timestamped backups (\texttt{personality.md.bak}).
+    \end{itemize}
+    \item[\texttt{ai\_assistant.compression}:]
+    \begin{itemize}
+        \item \texttt{pipeline.py}: Wrapper over \texttt{headroom-ai} pipeline managing text and code token reduction, protected turn preservation, and real-time telemetry extraction.
+    \end{itemize}
+    \item[\texttt{ai\_assistant.storage}:]
+    \begin{itemize}
+        \item \texttt{sqlite\_archive.py}: Complete SQLite schema manager with WAL configuration, foreign key verification, session insertion, message archiving, and VACUUM/maintenance routines.
+        \item \texttt{search.py}: FTS5 exact lexical retrieval engine and hybrid vector-lexical Reciprocal Rank Fusion (RRF) ranker.
+        \item \texttt{session\_summarizer.py}: Asynchronous background session summarizer generating 2-sentence summaries and titles on shutdown or command.
+        \item \texttt{compression.py}: Column-level compression utilities using Zstandard (\texttt{zstd}) level 3 with transparent zlib fallback.
+    \end{itemize}
+    \item[\texttt{ai\_assistant.embeddings}:]
+    \begin{itemize}
+        \item \texttt{embedder.py}: Asynchronous embedding generator invoking local Ollama (\texttt{nomic-embed-text}) to convert text into normalized 768-dimensional float vectors.
+    \end{itemize}
+    \item[\texttt{ai\_assistant.ui}:]
+    \begin{itemize}
+        \item \texttt{cli.py}: Interactive terminal interface built with \texttt{prompt\_toolkit} for syntax highlighting, command autocompletion, multiline input, and \texttt{rich} for markdown tables, banners, and streaming display.
+    \end{itemize}
+\end{description}
+
+\section{Request Lifecycle}
+When a user submits a prompt, execution proceeds through the following deterministic pipeline:
+\begin{enumerate}
+    \item \textbf{Input Interception}: The CLI determines whether the input is a command (prefixed with \texttt{/}) or a natural language message. Commands execute immediately.
+    \item \textbf{Context Assembly}: The active sliding-window buffer gathers the pinned system prompt (from \texttt{personality.md}) and historical conversational turns.
+    \item \textbf{Context Compression}: If \texttt{COMPRESSION\_ENABLED=true} and message length exceeds \texttt{COMPRESSION\_MIN\_TOKENS}, \texttt{HeadroomPipeline} transforms older messages while leaving the system prompt and the latest $N$ turns intact.
+    \item \textbf{Inference Dispatch}: Asynchronous streaming begins against the configured provider (Ollama or Gemini). Real-time telemetry records Time-to-First-Token (TTFT) and token generation speed.
+    \item \textbf{Tool Execution Cycle}:
+    \begin{itemize}
+        \item In \emph{Chat Mode}: If the model issues a tool call, only \texttt{search\_past\_conversations} or \texttt{load\_session\_transcript} are permitted. The tool runs once, returns results, and the model synthesizes the final reply without looping.
+        \item In \emph{Agent Mode}: An autonomous multi-turn loop executes sequential tool calls up to \texttt{AGENT\_MAX\_TURNS}, updating context dynamically.
+    \end{itemize}
+    \item \textbf{Persona Update Interception}: The output stream is scanned for XML tags \texttt{<personality\_update>}. If found, the manager updates \texttt{personality.md}, writes a backup, and notifies the user.
+    \item \textbf{Persistence}: The user input, model response, tool execution traces, tokens, and compression telemetry are committed to \texttt{conversations.db}.
+\end{enumerate}

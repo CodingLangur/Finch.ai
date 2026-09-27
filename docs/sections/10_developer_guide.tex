@@ -1,0 +1,131 @@
+\chapter{Developer Guide and GitHub Release Preparation}
+\label{chap:developer_guide}
+
+\section{Environment Installation and Setup}
+To configure a local development environment for Finch.ai:
+
+\begin{lstlisting}[language=bash]
+# 1. Clone repository
+git clone https://github.com/your-username/Ai_Assistant.git
+cd Ai_Assistant
+
+# 2. Initialize Python 3.10+ virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Install core dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 4. Configure local environment variables
+cp .env.example .env
+# Edit .env with your Gemini API key or custom Ollama host settings
+\end{lstlisting}
+
+\section{Adding Custom Agent Tools}
+Extending Finch.ai with new action tools requires three modular additions in \texttt{ai\_assistant/core/tools.py}:
+
+\subsection{1. Define the JSON Schema Specification}
+\begin{lstlisting}[language=Python]
+MY_CUSTOM_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "my_custom_tool",
+        "description": "Perform custom operation XYZ. Available in agent mode.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "param_a": {"type": "string", "description": "Target input."}
+            },
+            "required": ["param_a"]
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{2. Register Tool in Permission Categories}
+Add the tool to \texttt{TOOL\_CATEGORIES} and map its name to a category in \texttt{TOOL\_NAME\_TO\_CATEGORY}:
+\begin{lstlisting}[language=Python]
+TOOL_CATEGORIES["custom"] = [MY_CUSTOM_TOOL]
+TOOL_NAME_TO_CATEGORY["my_custom_tool"] = "custom"
+AGENT_ACTION_TOOLS.append(MY_CUSTOM_TOOL)
+\end{lstlisting}
+
+\subsection{3. Implement Async Execution in \texttt{ToolDispatcher}}
+Add the execution branch inside \texttt{ToolDispatcher.execute()}:
+\begin{lstlisting}[language=Python]
+elif tool_name == "my_custom_tool":
+    target = arguments.get("param_a", "")
+    return await self._execute_custom_operation(target)
+\end{lstlisting}
+
+\section{Pre-Push GitHub Verification Checklist}
+Before pushing modifications to GitHub, developers must execute the following checklist to maintain codebase integrity and repository security:
+
+\begin{enumerate}
+    \item \textbf{Secret and API Key Hygiene}:
+    Verify that no private keys, passwords, or personal credentials exist in tracked files:
+    \begin{lstlisting}[language=bash]
+git status
+git diff --cached
+    \end{lstlisting}
+    Ensure \texttt{.env} is ignored and only \texttt{.env.example} with sanitized placeholders is committed.
+    
+    \item \textbf{Execute Full Test Suite}:
+    Execute the unit and integration test suite and verify 100\% pass rate:
+    \begin{lstlisting}[language=bash]
+python -m unittest discover tests
+    \end{lstlisting}
+    
+    \item \textbf{Validate LaTeX Documentation Compilation}:
+    Compile the LaTeX documentation to verify that all figures, tables, cross-references, and listings build cleanly without missing package errors:
+    \begin{lstlisting}[language=bash]
+cd docs
+make clean && make
+    \end{lstlisting}
+    
+    \item \textbf{Clean Working Tree}:
+    Verify that temporary files, caches, SQLite databases (\texttt{conversations.db}), and LaTeX build artifacts are excluded:
+    \begin{lstlisting}[language=bash]
+git status
+    \end{lstlisting}
+\end{enumerate}
+
+\section{Configuration Variable Catalog}
+Table~\ref{tab:env_vars} catalogs all environment configuration variables supported by \texttt{ai\_assistant/config.py}.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lllp{5.5cm}}
+\toprule
+\textbf{Variable} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+\midrule
+\texttt{DEFAULT\_PROVIDER} & string & \texttt{ollama} & Default backend (\texttt{ollama} / \texttt{gemini}). \\
+\texttt{GEMINI\_API\_KEY} & string & \texttt{None} & Google Gemini API authentication key. \\
+\texttt{GEMINI\_DEFAULT\_MODEL} & string & \texttt{gemini-2.5-flash} & Default Gemini model variant. \\
+\texttt{OLLAMA\_HOST} & string & \texttt{http://localhost:11434} & Ollama local server URL. \\
+\texttt{DEFAULT\_MODEL} & string & \texttt{Gemma4-26000-ctx:latest} & Default Ollama model name. \\
+\texttt{REQUEST\_TIMEOUT} & float & \texttt{120.0} & HTTP request timeout in seconds. \\
+\texttt{WINDOW\_SIZE} & integer & \texttt{8} & Sliding window capacity in messages. \\
+\texttt{DEFAULT\_MODE} & string & \texttt{chat} & Initial mode (\texttt{chat} or \texttt{agent}). \\
+\texttt{AGENT\_MAX\_TURNS} & integer & \texttt{10} & Max autonomous steps in agent loop. \\
+\texttt{ENABLE\_TERMINAL\_TOOL} & boolean & \texttt{true} & Enable shell command execution tool. \\
+\texttt{ENABLE\_PYTHON\_TOOL} & boolean & \texttt{true} & Enable Python interpreter tool. \\
+\texttt{ENABLE\_WEB\_TOOL} & boolean & \texttt{false} & Enable web search and page fetch tools. \\
+\texttt{ENABLE\_FILE\_TOOLS} & boolean & \texttt{true} & Enable filesystem read/write/list tools. \\
+\texttt{TERMINAL\_TIMEOUT} & float & \texttt{30.0} & Terminal execution timeout in seconds. \\
+\texttt{COMPRESSION\_ENABLED} & boolean & \texttt{true} & Enable Headroom context compression. \\
+\texttt{COMPRESSION\_MIN\_TOKENS}& integer & \texttt{100} & Min tokens before compression triggers. \\
+\texttt{COMPRESSION\_PROTECT\_RECENT} & integer & \texttt{2} & Number of latest turns preserved intact. \\
+\texttt{DATABASE\_PATH} & string & \texttt{conversations.db} & Path to persistent SQLite database. \\
+\texttt{AUTO\_SUMMARIZE\_ON\_EXIT}& boolean & \texttt{true} & Summarize session on shutdown. \\
+\texttt{EMBEDDING\_MODEL} & string & \texttt{nomic-embed-text} & Ollama model for vector embeddings. \\
+\texttt{EMBEDDING\_DIM} & integer & \texttt{768} & Embedding vector dimensionality. \\
+\texttt{RRF\_K} & integer & \texttt{60} & Reciprocal Rank Fusion constant. \\
+\texttt{COMPRESS\_MESSAGE\_BODIES} & boolean & \texttt{false} & Enable \texttt{zstd} column compression. \\
+\bottomrule
+\end{tabular}
+\caption{Complete Environment Configuration Specification}
+\label{tab:env_vars}
+\end{table}

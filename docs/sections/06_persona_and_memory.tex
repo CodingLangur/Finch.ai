@@ -1,0 +1,52 @@
+\chapter{Persona Adaptation and Sliding Window Memory}
+\label{chap:persona_memory}
+
+\section{File-First Persona Architecture}
+Unlike static AI assistants that hardcode system prompts in Python source files, Finch.ai treats persona as an editable, persistent configuration artifact: \texttt{personality.md}.
+
+On application startup, \texttt{PersonaManager} loads the contents of \texttt{personality.md} into memory. The persona defines:
+\begin{itemize}
+    \item \textbf{Identity and Core Role}: The assistant's persona, expertise level, and voice.
+    \item \textbf{Behavioral Rules}: Brevity, technical precision, refusal of speculative fluff, and adherence to factual evidence.
+    \item \textbf{Formatting Guidelines}: Preferred code block styles, markdown formatting, and mathematical notation.
+\end{itemize}
+
+\section{Model-Driven Dynamic Adaptation}
+When a user explicitly instructs Finch.ai to adapt its tone, personality, or behavioral protocols (e.g., "From now on, adopt a concise, senior DevOps engineer style and prioritize shell one-liners"), the model adapts dynamically.
+
+\subsection{XML Tag Protocol}
+The system prompt instructs the model to wrap updated persona instructions within XML tags:
+\begin{lstlisting}[language=XML]
+<personality_update>
+You are Finch.ai, configured as a senior DevOps engineer.
+Provide concise, production-ready shell and automation scripts.
+Prioritize idempotency and observability in all solutions.
+</personality_update>
+\end{lstlisting}
+
+\subsection{Interception and Safety Pipeline}
+The streaming pipeline intercepts the response and processes updates via \texttt{PersonaManager.apply\_update()}:
+\begin{enumerate}
+    \item \textbf{Extraction}: Regular expressions match and extract content inside \texttt{<personality\_update>...</personality\_update>}.
+    \item \textbf{Validation}: Content is verified for non-emptiness and basic sanity checks (minimum length, character set integrity).
+    \item \textbf{Atomic Backup}: The existing \texttt{personality.md} is written to \texttt{personality.md.bak} to safeguard against accidental corruption.
+    \item \textbf{Disk Persistence}: The new text is flushed to \texttt{personality.md}.
+    \item \textbf{In-Memory Hot Reload}: The pinned system prompt in \texttt{SlidingWindowBuffer} is immediately replaced, activating the new persona for subsequent turns without requiring application restart.
+\end{enumerate}
+
+\section{Sliding-Window Memory Buffer}
+Conversational context is maintained in an in-memory buffer (\texttt{SlidingWindowBuffer}) implemented using Python's \texttt{collections.deque}.
+
+\subsection{Buffer Invariants}
+Let $W$ denote the configured \texttt{WINDOW\_SIZE} (default: 8 messages, corresponding to 4 dialogue turns). The buffer enforces two strict invariants:
+\begin{enumerate}
+    \item \textbf{Pinned System Prompt}: The system message containing the persona is anchored at index 0 and is immune to FIFO eviction.
+    \item \textbf{Bounded Dialogue History}: Only the $W$ most recent conversational messages are retained:
+    \begin{equation}
+        \text{Active Context} = [M_{\text{system}}] \cup [M_{t-W+1}, M_{t-W+2}, \dots, M_t]
+    \end{equation}
+    When new messages are added and buffer size exceeds $W + 1$, the oldest non-system message is popped from the front of the queue.
+\end{enumerate}
+
+\subsection{Context Eviction vs. Long-Term Storage}
+Eviction from \texttt{SlidingWindowBuffer} does \emph{not} cause memory loss. While evicted from the active attention window, every turn is permanently archived into \texttt{conversations.db} and indexed in FTS5 and \texttt{sqlite-vec}. If the user subsequently references an evicted topic, the tool-calling retrieval pipeline seamlessly queries the archive.

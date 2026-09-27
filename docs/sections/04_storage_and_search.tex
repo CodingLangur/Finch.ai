@@ -1,0 +1,139 @@
+\chapter{Relational Persistence, Vector Indexing and Hybrid Search}
+\label{chap:storage_search}
+
+\section{SQLite Architecture and Database Pragmas}
+Conversational state, reasoning traces, and metadata are persisted locally in \texttt{conversations.db}. Finch.ai configures SQLite with high-concurrency pragmas upon connection initialization:
+
+\begin{lstlisting}[language=SQL, caption={SQLite Production Connection Pragmas}]
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
+\end{lstlisting}
+
+Write-Ahead Logging (WAL) permits concurrent reader processes without locking the database file, allowing real-time CLI queries while background summarizers and active chats commit new turns.
+
+\section{Relational Schema}
+The persistence model is composed of two primary relational tables and two specialized virtual tables.
+
+\subsection{The \texttt{sessions} Table}
+Tracks conversational sessions, lifecycle timestamps, summary texts, and token totals:
+\begin{lstlisting}[language=SQL]
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    summary TEXT,
+    total_tokens INTEGER DEFAULT 0,
+    model TEXT,
+    provider TEXT
+);
+\end{lstlisting}
+
+\subsection{The \texttt{messages} Table}
+Maintains the complete sequential dialogue history with foreign-key cascades:
+\begin{lstlisting}[language=SQL]
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    model TEXT,
+    prompt_tokens INTEGER DEFAULT 0,
+    eval_tokens INTEGER DEFAULT 0,
+    eval_duration_ms REAL DEFAULT 0.0,
+    tokens_per_second REAL DEFAULT 0.0,
+    ttft_ms REAL DEFAULT 0.0,
+    reasoning_content TEXT,
+    tool_calls TEXT,
+    tool_call_id TEXT,
+    compressed INTEGER DEFAULT 0
+);
+\end{lstlisting}
+
+\section{Sub-Millisecond Lexical Search with FTS5}
+To deliver instantaneous recall of technical terms, code snippets, dates, and filenames, Finch.ai provisions an SQLite FTS5 full-text search virtual table:
+
+\begin{lstlisting}[language=SQL]
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    message_id UNINDEXED,
+    session_id UNINDEXED,
+    role,
+    content,
+    tokenize = 'porter unicode61'
+);
+\end{lstlisting}
+
+\subsection{Trigger-Driven Synchronization}
+To eliminate indexing lag and maintain ACID consistency, three database triggers synchronize \texttt{messages\_fts} synchronously on write operations:
+
+\begin{lstlisting}[language=SQL]
+CREATE TRIGGER IF NOT EXISTS trg_messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(message_id, session_id, role, content)
+    VALUES (new.id, new.session_id, new.role, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_messages_ad AFTER DELETE ON messages BEGIN
+    DELETE FROM messages_fts WHERE message_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_messages_au AFTER UPDATE ON messages BEGIN
+    DELETE FROM messages_fts WHERE message_id = old.id;
+    INSERT INTO messages_fts(message_id, session_id, role, content)
+    VALUES (new.id, new.session_id, new.role, new.content);
+END;
+\end{lstlisting}
+
+\section{Dense Semantic Vector Search with \texttt{sqlite-vec}}
+While FTS5 excels at exact keyword matching (e.g., \texttt{def calculate\_hash()}), natural language queries frequently use conceptual, non-overlapping vocabulary (e.g., "how did we handle caching in python?").
+
+Finch.ai uses the local embedding model \texttt{nomic-embed-text} (via Ollama) to compute 768-dimensional normalized floating-point vectors for session summaries upon completion. These vectors are indexed into a \texttt{vec0} virtual table:
+
+\begin{lstlisting}[language=SQL]
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_vec USING vec0(
+    session_id TEXT PRIMARY KEY,
+    embedding FLOAT[768] distance_metric=cosine
+);
+\end{lstlisting}
+
+\section{Reciprocal Rank Fusion (RRF)}
+Neither lexical nor semantic search alone suffices for comprehensive memory retrieval. Finch.ai unifies both modalities using \textbf{Reciprocal Rank Fusion (RRF)}.
+
+\subsection{Mathematical Formulation}
+Let $D$ denote the corpus of past sessions. Suppose lexical retrieval produces a ranked list $R_{\text{lex}}$ and vector search produces a ranked list $R_{\text{vec}}$. For a session $d \in D$, let $r_{\text{lex}}(d)$ and $r_{\text{vec}}(d)$ represent the 1-based ordinal rank of $d$ within each list (or $\infty$ if unranked).
+
+The composite RRF score is computed as:
+\begin{equation}
+    \text{RRF\_Score}(d) = \sum_{m \in \{\text{lex}, \text{vec}\}} \frac{1}{k + r_m(d)}
+\end{equation}
+where $k$ is a smoothing constant that dampens the influence of outlier top-ranked items from any single modality. Finch.ai sets the default:
+\begin{equation}
+    k = 60
+\end{equation}
+
+When candidate documents are scored, results are sorted in descending order of $\text{RRF\_Score}(d)$. Sessions appearing near the top of both indices receive the highest composite weight.
+
+\section{Column-Level Storage Compression (Zstandard)}
+To maintain a compact disk footprint over months of heavy usage, Finch.ai incorporates column-level compression (\texttt{ai\_assistant/storage/compression.py}) using Zstandard (\texttt{zstd}) level 3 with automatic \texttt{zlib} fallback.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.5cm, auto]
+    \node (plain) [draw, rectangle, fill=gray!10, rounded corners, text width=3cm, text centered] {Plaintext Payload\\(\texttt{str})};
+    \node (check) [draw, diamond, aspect=1.8, fill=yellow!15, text width=2.5cm, text centered, right=of plain] {Length $>$\\1,024 bytes?};
+    \node (zstd) [draw, rectangle, fill=blue!10, rounded corners, text width=3.2cm, text centered, right=of check] {Zstandard Compress\\(\texttt{zstd.compress}, lvl 3)};
+    \node (tag) [draw, rectangle, fill=green!10, rounded corners, text width=3cm, text centered, below=of zstd] {Magic Header Prepended\\(\texttt{b"\textbackslash x28\textbackslash xb5\textbackslash x2f\textbackslash xfd"})};
+    \node (raw) [draw, rectangle, fill=gray!10, rounded corners, text width=3cm, text centered, below=of check] {Store Uncompressed};
+
+    \draw [->, thick] (plain) -- (check);
+    \draw [->, thick] (check) -- node[above] {Yes} (zstd);
+    \draw [->, thick] (check) -- node[left] {No} (raw);
+    \draw [->, thick] (zstd) -- (tag);
+\end{tikzpicture}
+\caption{Column-Level Message Payload Compression Logic}
+\label{fig:column_compression}
+\end{figure}
+
+Payloads exceeding 1,024 bytes are compressed prior to database insertion. Decompression is transparent upon retrieval, maintaining zero disruption to querying while slashing database size by up to 90\%.

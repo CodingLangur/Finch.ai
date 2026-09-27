@@ -1,0 +1,99 @@
+\chapter{Agent Architecture, Tool Schemas and Safety Dispatcher}
+\label{chap:agent_mode}
+
+\section{Dual-Mode Operational Philosophy}
+Finch.ai decouples assistant interactions into two distinct operational paradigms: \textbf{Chat Mode} and \textbf{Agent Mode}. Users can inspect or toggle modes via \texttt{/mode [chat|agent]} or the \texttt{--mode} startup argument.
+
+\subsection{Chat Mode (Safety and Low Latency)}
+In Chat Mode, the assistant prioritizes minimal latency, deterministic conversational safety, and zero runaway execution risk.
+\begin{itemize}
+    \item \textbf{Restricted Toolset}: Only read-only historical memory tools (\texttt{search\_past\_conversations} and \texttt{load\_session\_transcript}) are exposed to the model.
+    \item \textbf{Single-Hop Retrieval Enforcement}: Tool execution is strictly limited to one cycle per turn:
+    \begin{equation}
+        \text{User Query} \xrightarrow{\text{Pass 1}} \text{Tool Invocation} \xrightarrow{\text{Storage Fetch}} \text{Tool Result} \xrightarrow{\text{Pass 2 (tools=None)}} \text{Final Synthesis}
+    \end{equation}
+    Pass 2 is dispatched with \texttt{tools=None}, making it mathematically impossible for the LLM to trigger nested, recursive tool loops.
+\end{itemize}
+
+\subsection{Agent Mode (Multi-Turn Autonomous Execution)}
+In Agent Mode, Finch.ai functions as an autonomous technical agent. When tasked with complex goals (e.g., investigating system state, executing Python scripts, querying the web, or editing files), it initiates an iterative loop:
+
+\begin{algorithm}[H]
+\caption{Sequential Multi-Turn Agent Loop}
+\begin{algorithmic}[1]
+\State $\text{turns} \gets 0$
+\While{$\text{turns} < \text{AGENT\_MAX\_TURNS}$}
+    \State $\text{response} \gets \Call{StreamPrompt}{\text{context}, \text{active\_tools}}$
+    \If{$\text{response has no tool calls}$}
+        \State \Return $\text{response}$ \Comment{Task completed}
+    \EndIf
+    \For{$\text{call} \in \text{response.tool\_calls}$}
+        \State $\Call{RenderNotice}{\text{"Agent Step "} + \text{turns} + \text{": Executing " } + \text{call.name}}$
+        \State $\text{result} \gets \Call{ToolDispatcher.execute}{\text{call.name}, \text{call.arguments}}$
+        \State $\Call{AppendToContext}{\text{call}, \text{result}}$
+    \EndFor
+    \State $\text{turns} \gets \text{turns} + 1$
+\EndWhile
+\State \Return $\Call{StreamPrompt}{\text{context}, \text{tools}=\text{None}}$ \Comment{Exhausted max turns}
+\end{algorithmic}
+\end{algorithm}
+
+\section{Tool Schema Inventory}
+Table~\ref{tab:tool_inventory} outlines the tool capabilities exposed across Finch.ai's operational categories.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lllp{6cm}}
+\toprule
+\textbf{Category} & \textbf{Tool Name} & \textbf{Mode Availability} & \textbf{Operational Function} \\
+\midrule
+\texttt{memory} & \texttt{search\_past\_conversations} & Chat \& Agent & Hybrid vector/lexical search of past sessions. \\
+\texttt{memory} & \texttt{load\_session\_transcript} & Chat \& Agent & Chronological message retrieval by session ID. \\
+\texttt{terminal} & \texttt{run\_terminal\_command} & Agent only & Local shell command execution with timeout. \\
+\texttt{python} & \texttt{python\_interpreter} & Agent only & Isolated Python script runner with output capture. \\
+\texttt{files} & \texttt{read\_file} & Agent only & File system reader with line limits. \\
+\texttt{files} & \texttt{write\_file} & Agent only & Atomic file writer with directory creation. \\
+\texttt{files} & \texttt{list\_directory} & Agent only & Directory listing with file metadata. \\
+\texttt{web} & \texttt{web\_search} & Agent only & Live web query engine for online documentation. \\
+\texttt{web} & \texttt{fetch\_web\_page} & Agent only & HTTP content fetcher with HTML parsing. \\
+\bottomrule
+\end{tabular}
+\caption{Finch.ai Tool Inventory and Access Levels}
+\label{tab:tool_inventory}
+\end{table}
+
+\section{Security Architecture and Tool Permission Matrix}
+To prevent unauthorized system modification or unexpected network requests, Finch.ai implements a \textbf{Two-Tier Guardrail Architecture}.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.8cm, auto]
+    \node (config) [draw, rectangle, fill=blue!10, rounded corners, text width=3.5cm, text centered] {AppConfig Toggles\\(\texttt{ENABLE\_WEB\_TOOL=false})};
+    \node (tier1) [draw, rectangle, fill=orange!15, rounded corners, text width=4cm, text centered, right=of config] {\textbf{Tier 1: Schema Filter}\\Omit disabled tools from LLM system prompt};
+    \node (llm) [draw, ellipse, fill=purple!15, text width=2.5cm, text centered, below=of tier1] {LLM Model Engine};
+    \node (tier2) [draw, rectangle, fill=red!15, rounded corners, text width=4cm, text centered, left=of llm] {\textbf{Tier 2: Dispatcher Guard}\\Reject unauthorized calls with security violation error};
+
+    \draw [->, thick] (config) -- (tier1);
+    \draw [->, thick] (tier1) -- node[right, font=\scriptsize] {Active Tool Schemas} (llm);
+    \draw [->, thick] (llm) -- node[above, font=\scriptsize] {Tool Call Request} (tier2);
+    \draw [->, thick] (config) -- (tier2);
+\end{tikzpicture}
+\caption{Two-Tier Tool Permission and Guardrail Architecture}
+\label{fig:guardrail_arch}
+\end{figure}
+
+\begin{enumerate}
+    \item \textbf{Tier 1: Prompt-Time Schema Omission}: When a category (e.g., \texttt{web}) is toggled off, its tool schema is excluded from the inference payload sent to Ollama or Gemini. The model is completely unaware of the capability.
+    \item \textbf{Tier 2: Dispatcher-Level Validation}: If an adversarial or hallucinated call to a disabled tool is emitted by the model, \texttt{ToolDispatcher.execute()} intercepts the call, rejects execution, and returns:
+    \begin{quote}
+        \texttt{"Error: Tool '<tool\_name>' is disabled. Enable category '<category>' via '/tools <category> on' to use this tool."}
+    \end{quote}
+\end{enumerate}
+
+Runtime category toggling is available instantly in the interactive session:
+\begin{lstlisting}[language=bash]
+/tools web on
+/tools terminal off
+/tools
+\end{lstlisting}

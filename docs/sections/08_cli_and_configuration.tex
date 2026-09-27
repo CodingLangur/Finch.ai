@@ -1,0 +1,84 @@
+\chapter{Interactive CLI and Configuration Reference}
+\label{chap:cli_config}
+
+\section{Command-Line Interface (CLI)}
+Finch.ai provides a developer-friendly terminal interface powered by \texttt{rich} and \texttt{prompt\_toolkit}. It features multiline input, persistent command history (\texttt{\textasciitilde/.finch\_history}), tab completion, and styled output formatting.
+
+\section{Interactive Slash Commands}
+Table~\ref{tab:slash_commands} catalogs all slash commands available in the interactive prompt.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lp{9.5cm}}
+\toprule
+\textbf{Command} & \textbf{Functionality / Description} \\
+\midrule
+\texttt{/mode [chat|agent]} & Toggle or inspect operational mode between safe chat and agent loop. \\
+\texttt{/tools [cat] [on|off]} & View tool permissions or toggle categories: \texttt{terminal}, \texttt{python}, \texttt{web}, \texttt{files}. \\
+\texttt{/search <query>} & Execute exact FTS5 lexical search across all stored messages. \\
+\texttt{/hybrid <query>} & Execute Reciprocal Rank Fusion search (FTS5 BM25 + \texttt{sqlite-vec}). \\
+\texttt{/transcript [id]} & Retrieve and print complete dialogue transcript for an identified session. \\
+\texttt{/sessions [limit]} & List recent archived sessions with summaries, token counts, and timestamps. \\
+\texttt{/session} & Display metadata, token consumption, and status of the current active session. \\
+\texttt{/summarize} & Generate a concise 2-sentence summary and title for the active session. \\
+\texttt{/new [title]} & Commit the current session and start a clean session with fresh context. \\
+\texttt{/storage} or \texttt{/db} & Display database size, freelist pages, WAL log size, and table row counts. \\
+\texttt{/vacuum} & Run database maintenance: WAL checkpoint, optimize, and \texttt{VACUUM}. \\
+\texttt{/archive [days]} & Move sessions older than $N$ days to \texttt{conversations\_archive.db}. \\
+\texttt{/compress [on|off|stats]} & Toggle Headroom context compression or inspect compression telemetry. \\
+\texttt{/persona [reload|edit]} & View, reload from disk, or view the path to \texttt{personality.md}. \\
+\texttt{/models} & Query and list all installed models on the local Ollama instance. \\
+\texttt{/use <model>} & Dynamically switch active inference model without restarting. \\
+\texttt{/buffer} & Inspect active memory buffer messages and character counts. \\
+\texttt{/system [prompt]} & Inspect or dynamically override the pinned system prompt. \\
+\texttt{/clear} & Flush dialogue history in memory while preserving the system prompt. \\
+\texttt{/help} & Print built-in command reference guide. \\
+\texttt{/exit} or \texttt{/quit} & Commit active session, generate vector index, and cleanly exit. \\
+\bottomrule
+\end{tabular}
+\caption{Comprehensive Finch.ai Slash Command Reference}
+\label{tab:slash_commands}
+\end{table}
+
+\section{Command-Line Startup Arguments}
+Finch.ai can be launched with custom operational flags from the terminal:
+
+\begin{lstlisting}[language=bash]
+# Launch with custom model and window size
+python main.py --model Gemma4-26000-ctx:latest --window-size 12
+
+# Launch directly in Agent Mode
+python main.py --mode agent
+
+# Use Google Gemini provider
+python main.py --provider gemini --model gemini-2.5-flash
+
+# Execute a one-off non-interactive query and exit
+python main.py -q "Explain the benefits of WAL mode in SQLite."
+\end{lstlisting}
+
+Table~\ref{tab:cli_flags} summarizes the supported command-line arguments.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Argument} & \textbf{Default} & \textbf{Description} \\
+\midrule
+\texttt{--model} & In config & Model name to use for inference \\
+\texttt{--host} & \texttt{http://localhost:11434} & Host URL for the Ollama inference server \\
+\texttt{--provider} & \texttt{ollama} & Model provider (\texttt{ollama} or \texttt{gemini}) \\
+\texttt{--mode} & \texttt{chat} & Assistant mode (\texttt{chat} or \texttt{agent}) \\
+\texttt{--window-size} & \texttt{8} & Sliding window message capacity \\
+\texttt{--no-compression} & \texttt{False} & Disable Headroom context compression \\
+\texttt{-q, --query} & \texttt{None} & Run single query in batch mode and exit \\
+\bottomrule
+\end{tabular}
+\caption{Command-Line Flag Specifications}
+\label{tab:cli_flags}
+\end{table}
+
+\section{Environment Configuration (\texttt{.env})}
+All operational parameters can be configured through environment variables or a local \texttt{.env} file. Refer to Chapter~\ref{chap:developer_guide} for the complete variable manifest.

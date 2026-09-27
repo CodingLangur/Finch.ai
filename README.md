@@ -131,3 +131,14 @@ python main.py --no-compression
 # Run a quick one-off query:
 python main.py -q "Explain context compression in 2 sentences."
 ```
+
+---
+
+## Technical Documentation
+
+A detailed technical architecture manual and system specification is available in the [`docs/`](docs/) directory. Written in \LaTeX, it covers the complete subsystem architecture, memory models, mathematical formulations for Reciprocal Rank Fusion, benchmark evaluations, and developer extension workflows.
+
+- **LaTeX Source & Modular Chapters**: [`docs/`](docs/)
+- **Compiled PDF Manual**: [`docs/main.pdf`](docs/main.pdf)
+- **Compilation Guide**: See [`docs/README.md`](docs/README.md) (`make` or `./build.sh`)
+

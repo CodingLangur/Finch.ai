@@ -1,0 +1,60 @@
+\chapter{Introduction and System Overview}
+\label{chap:introduction}
+
+\section{Project Motivation}
+Modern Large Language Model (LLM) interfaces often face a trilemma between computational latency, context retention costs, and architectural flexibility. Users interacting with local open-weights models (such as Ollama runtimes) or hosted high-capability APIs (such as Google Gemini) require:
+\begin{enumerate}
+    \item \textbf{Sub-second response responsiveness} with minimal Time-to-First-Token (TTFT) and real-time generation metrics.
+    \item \textbf{Long-term conversation durability and deep memory recall} without boundless token inflation or context window exhaustion.
+    \item \textbf{Deterministic guardrails and autonomous problem-solving capabilities}, providing smooth transitions between conversational chat and multi-turn action execution.
+\end{enumerate}
+
+\textbf{Finch.ai} is an open-source, extensible AI Assistant foundation engineered in Python 3.10+ to resolve this trilemma. Operating locally or over cloud APIs, Finch.ai couples modern asynchronous streaming with dynamic context compression, embedded relational persistence, hybrid lexical-vector retrieval, and strict tool-dispatching security layers.
+
+\section{Core Capabilities}
+Finch.ai provides the following primary features:
+
+\begin{itemize}
+    \item \textbf{Dual Provider Infrastructure}: Native asynchronous client integrations with \texttt{httpx} streaming for local Ollama endpoints (default model: \texttt{Gemma4-26000-ctx:latest}) and Google Gemini endpoints (\texttt{gemini-2.5-flash}, \texttt{gemini-2.5-pro}) over Server-Sent Events (SSE).
+    \item \textbf{Headroom Context Compression Pipeline}: Seamless token-reduction middleware intercepting tool outputs, structured JSON payloads, source code ASTs, and conversational turns before LLM ingestion. It achieves 15\% to 60\%+ token reduction while guaranteeing byte-level fidelity for pinned system instructions.
+    \item \textbf{Sliding-Window Memory Buffer}: In-memory FIFO context tracking maintaining an active dialogue window with deterministic system prompt pinning.
+    \item \textbf{Dynamic Persona Adaptation}: File-first system prompt loading via \texttt{personality.md}, runtime model adaptation using validated XML extraction (\texttt{<personality\_update>}), and atomic file backup mechanisms.
+    \item \textbf{SQLite Relational Persistence}: Production-ready local logging in Write-Ahead Logging (WAL) mode with enforced foreign keys, archiving dialogue sessions, message metadata, token counts, reasoning traces, and compression ratios.
+    \item \textbf{Sub-Millisecond Lexical Search (FTS5)}: Full-text search engine with SQLite triggers on insertion, update, and deletion, powering exact-term matching and BM25 relevance scoring.
+    \item \textbf{Vector Embeddings and Reciprocal Rank Fusion (RRF)}: Automated generation of 768-dimensional session summary embeddings (\texttt{nomic-embed-text}) indexed in \texttt{sqlite-vec} virtual tables, integrated with FTS5 lexical signals via Reciprocal Rank Fusion ($k=60$).
+    \item \textbf{Dual Operating Modes (Chat vs. Agent)}:
+    \begin{itemize}
+        \item \emph{Chat Mode}: Restricts tool execution to single-hop read-only historical memory queries, strictly eliminating hallucinated multi-hop loops.
+        \item \emph{Agent Mode}: Autonomous sequential multi-turn loop supporting local terminal command execution, isolated Python execution, filesystem operations, and live web access.
+    \end{itemize}
+    \item \textbf{Granular Permission Matrix}: Fine-grained categorical toggles for agent tools (\texttt{terminal}, \texttt{python}, \texttt{web}, \texttt{files}) enforced at schema injection and runtime dispatch levels.
+    \item \textbf{Columnar Storage Compression}: Transparent Zstandard (\texttt{zstd}) compression for SQLite message text payloads with automatic zlib fallback, saving up to 92\% storage space for tool logs and code snippets.
+    \item \textbf{Production Database Housekeeping}: In-engine database maintenance routines (\texttt{VACUUM}, \texttt{PRAGMA optimize}, \texttt{wal\_checkpoint(TRUNCATE)}, and database-level cold archiving).
+\end{itemize}
+
+\section{System Specifications}
+Table~\ref{tab:system_specs} summarizes the operational parameters and software dependencies of Finch.ai.
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabular}{llp{7.5cm}}
+\toprule
+\textbf{Component} & \textbf{Default Technology} & \textbf{Purpose / Details} \\
+\midrule
+Language Runtime & Python 3.10 -- 3.14 & AsyncIO asynchronous event loop \\
+Local LLM Host & Ollama API (\texttt{localhost:11434}) & Local inference runner \\
+Cloud LLM Host & Google Gemini API & Hosted high-throughput inference \\
+Terminal UI & \texttt{rich} + \texttt{prompt\_toolkit} & Real-time streaming UI with history \& auto-completion \\
+Context Compression & \texttt{headroom-ai} $\ge$ 0.38.0 & Token optimization pipeline \\
+Relational Storage & SQLite3 (WAL mode) & ACID session and message persistence \\
+Lexical Search & SQLite FTS5 extension & Sub-millisecond token search with BM25 \\
+Vector Search & \texttt{sqlite-vec} $\ge$ 0.1.9 & Fast vector distance search on embeddings \\
+Embedding Model & \texttt{nomic-embed-text} (768-dim) & Local dense semantic representation \\
+Columnar Compression & \texttt{zstandard} $\ge$ 0.23.0 & High-ratio column compression for message records \\
+System Profiling & \texttt{psutil} $\ge$ 5.9.0 & Resident set size (RSS) and process metrics \\
+\bottomrule
+\end{tabular}
+\caption{Finch.ai Technical Specifications}
+\label{tab:system_specs}
+\end{table}

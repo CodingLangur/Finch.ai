@@ -86,7 +86,7 @@ coverage.xml
 *.out
 *.run.xml
 *.snm
-*.synctex.gz
+*.synctex*
 *.toc
 *.vrb
 *.xdv

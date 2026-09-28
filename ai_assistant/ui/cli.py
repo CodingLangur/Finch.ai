@@ -83,7 +83,10 @@ class InteractiveCLI:
         table.add_row("/mode [chat|agent]", "Toggle or set assistant mode (chat vs agent)")
         table.add_row("/tools [cat] [on|off]", "View or toggle agent tool access (terminal, python, web, files)")
         table.add_row("/compress [on|off|stats]", "Toggle or inspect Headroom context compression")
-        table.add_row("/persona [reload|edit]", "View, reload, or manage personality.md")
+        table.add_row("/persona [reload|edit|adapt|wipe]", "View, reload, adapt, or reset personality.md")
+        table.add_row("/wipe <conversation|persona>", "Wipe conversation history or reset personality.md separately")
+        table.add_row("/export [filepath]", "Bundle conversation data and personality.md for backup (.zip)")
+        table.add_row("/import <filepath> [mode]", "Restore conversation data and personality.md from backup")
         table.add_row("/buffer", "Inspect current sliding-window message buffer")
         table.add_row("/clear", "Clear message history (retains system prompt)")
         table.add_row("/vacuum, /maintenance", "Run SQLite housekeeping (checkpoint, optimize, VACUUM)")
@@ -131,9 +134,9 @@ class InteractiveCLI:
         self.console.print(table)
         self.console.print(f"[dim]Use [bold cyan]/use <model>[/bold cyan] to switch.[/dim]\n")
 
-    def handle_persona_command(self, arg: str) -> None:
-        """View, reload, or get edit instructions for personality.md."""
-        arg = arg.lower()
+    async def handle_persona_command(self, arg: str) -> None:
+        """View, reload, adapt, or reset personality.md."""
+        arg = arg.strip().lower()
         if arg == "reload":
             content = self.assistant.reload_persona()
             self.console.print(
@@ -145,8 +148,11 @@ class InteractiveCLI:
                 f"[cyan]You can edit the personality file directly in your editor:[/cyan]\n[bold white]{abs_path}[/bold white]\n"
                 "[dim]After saving, run [bold cyan]/persona reload[/bold cyan] to apply changes without restarting.[/dim]\n"
             )
+        elif arg in ("wipe", "reset"):
+            self.handle_wipe_command("persona")
+        elif arg in ("adapt", "evolve"):
+            await self.handle_persona_adapt_command()
         else:
-            # Display current persona markdown
             content = self.assistant.persona_manager.load_persona()
             panel = Panel(
                 Markdown(content),
@@ -155,7 +161,134 @@ class InteractiveCLI:
                 box=ROUNDED,
             )
             self.console.print(panel)
-            self.console.print("[dim]Use [bold cyan]/persona reload[/bold cyan] after editing the file.[/dim]\n")
+            self.console.print(
+                "[dim]Commands: [bold cyan]/persona reload[/bold cyan] | "
+                "[bold cyan]/persona edit[/bold cyan] | "
+                "[bold cyan]/persona adapt[/bold cyan] | "
+                "[bold cyan]/persona wipe[/bold cyan][/dim]\n"
+            )
+
+    async def handle_persona_adapt_command(self) -> None:
+        """Analyze recent conversation summaries and adapt personality.md."""
+        with self.console.status("[bold cyan]Analyzing conversations to adapt personality...[/bold cyan]"):
+            success, msg = await self.assistant.adapt_persona()
+
+        if success:
+            self.console.print(f"[bold green]✓ {msg}[/bold green]\n")
+            content = self.assistant.persona_manager.load_persona()
+            panel = Panel(
+                Markdown(content),
+                title=f"[bold green]Updated Persona ({self.assistant.config.personality_path})[/bold green]",
+                border_style="green",
+                box=ROUNDED,
+            )
+            self.console.print(panel)
+            self.console.print()
+        else:
+            self.console.print(f"[bold yellow]Persona adaptation notice:[/bold yellow] {msg}\n")
+
+    def handle_wipe_command(self, arg: str) -> None:
+        """Wipe conversation history or personality.md separately."""
+        parts = arg.strip().split()
+        target = parts[0].lower() if parts else ""
+
+        if target in ("persona", "personality"):
+            content = self.assistant.wipe_persona()
+            self.console.print(
+                f"[bold green]✓ Successfully wiped {self.assistant.config.personality_path}![/bold green]\n"
+                f"[dim]Reset to default template. Previous version saved to {self.assistant.config.personality_path}.bak[/dim]\n"
+            )
+        elif target in ("conversation", "conv", "history"):
+            scope = parts[1].lower() if len(parts) > 1 else "current"
+            all_sessions = scope in ("all", "full", "everything")
+            stats = self.assistant.wipe_conversation(all_sessions=all_sessions)
+
+            if all_sessions:
+                self.console.print(
+                    f"[bold green]✓ Successfully wiped ALL conversation history![/bold green]\n"
+                    f"Cleared [bold white]{stats.get('sessions_wiped', 0)}[/bold white] sessions and "
+                    f"[bold white]{stats.get('messages_wiped', 0)}[/bold white] messages from SQLite.\n"
+                    f"Started fresh session: [cyan]{self.assistant.current_session.id}[/cyan]\n"
+                )
+            else:
+                self.console.print(
+                    f"[bold green]✓ Successfully wiped conversation messages for active session![/bold green]\n"
+                    f"Removed [bold white]{stats.get('messages_wiped', 0)}[/bold white] message(s). In-memory buffer cleared.\n"
+                )
+        else:
+            self.console.print(
+                "[yellow]Usage: /wipe <target>[/yellow]\n"
+                "  [bold cyan]/wipe conversation [current|all][/bold cyan] - Wipe conversation history\n"
+                "  [bold cyan]/wipe persona[/bold cyan]                 - Reset personality.md to default template (backs up to .bak)\n"
+            )
+
+    def handle_export_command(self, arg: str) -> None:
+        """Export conversation data and personality.md to a backup zip bundle."""
+        target_path = arg.strip() if arg.strip() else None
+        with self.console.status("[bold cyan]Creating backup bundle (conversations + personality)...[/bold cyan]"):
+            try:
+                zip_path = self.assistant.export_backup(output_path=target_path)
+                file_size = os.path.getsize(zip_path)
+            except Exception as e:
+                self.console.print(f"[bold red]Backup export failed:[/bold red] {e}\n")
+                return
+
+        grid = Table.grid(padding=1)
+        grid.add_column(style="cyan", justify="left")
+        grid.add_column(style="bold white", justify="left")
+
+        grid.add_row("Backup Bundle:", zip_path)
+        grid.add_row("Bundle Size:", f"{file_size:,} bytes ({file_size/1024:.1f} KB)")
+        grid.add_row("Contents:", "conversations.db, conversations.json, personality.md, manifest.json")
+        grid.add_row("Active Persona:", self.assistant.config.personality_path)
+
+        panel = Panel(
+            grid,
+            title="[bold green]📦 Backup Bundle Exported Successfully[/bold green]",
+            border_style="green",
+            box=ROUNDED,
+        )
+        self.console.print(panel)
+        self.console.print(f"[dim]To restore this backup later, run: [bold cyan]/import {zip_path}[/bold cyan][/dim]\n")
+
+    def handle_import_command(self, arg: str) -> None:
+        """Restore conversation data and personality.md from a backup zip bundle."""
+        parts = arg.strip().split()
+        if not parts:
+            self.console.print("[yellow]Usage: /import <backup_file.zip> [replace|merge][/yellow]\n")
+            return
+
+        file_path = parts[0]
+        mode = parts[1].lower() if len(parts) > 1 else "replace"
+        if mode not in ("replace", "merge"):
+            mode = "replace"
+
+        with self.console.status(f"[bold cyan]Restoring from backup '{file_path}' ({mode} mode)...[/bold cyan]"):
+            try:
+                res = self.assistant.import_backup(backup_path=file_path, mode=mode)
+            except Exception as e:
+                self.console.print(f"[bold red]Backup import failed:[/bold red] {e}\n")
+                return
+
+        grid = Table.grid(padding=1)
+        grid.add_column(style="cyan", justify="left")
+        grid.add_column(style="bold white", justify="left")
+
+        grid.add_row("Backup Source:", res.get("backup_path", file_path))
+        grid.add_row("Restore Mode:", mode.upper())
+        grid.add_row("Sessions Restored:", str(res.get("sessions_restored", 0)))
+        grid.add_row("Messages Restored:", str(res.get("messages_restored", 0)))
+        grid.add_row("Personality Restored:", "Yes (live updated)" if res.get("persona_restored") else "No")
+        grid.add_row("Current Active Session:", self.assistant.current_session.id)
+
+        panel = Panel(
+            grid,
+            title="[bold green]🔄 Backup Restored Successfully[/bold green]",
+            border_style="green",
+            box=ROUNDED,
+        )
+        self.console.print(panel)
+        self.console.print()
 
     def handle_compression_command(self, arg: str) -> None:
         """Toggle or inspect Headroom context compression pipeline."""
@@ -630,6 +763,19 @@ class InteractiveCLI:
             except Exception as e:
                 self.console.print(f"[dim yellow]Notice: Exit summarization skipped: {e}[/dim yellow]")
 
+        if getattr(self.assistant.config, "auto_adapt_persona", False):
+            try:
+                msgs = self.assistant.archive.get_messages(
+                    self.assistant.current_session.id, include_system=False
+                )
+                if any(m.role.lower() == "user" for m in msgs):
+                    with self.console.status("[bold cyan]Adapting personality from session...[/bold cyan]"):
+                        adapted, msg = await self.assistant.adapt_persona()
+                    if adapted:
+                        self.console.print(f"[bold green]✦ Persona Evolved:[/bold green] {msg}\n")
+            except Exception as e:
+                self.console.print(f"[dim yellow]Notice: Persona adaptation skipped: {e}[/dim yellow]")
+
         self.assistant.close()
         self.console.print("[yellow]Assistant session closed. Goodbye![/yellow]")
 
@@ -713,7 +859,23 @@ class InteractiveCLI:
                 return True
 
             elif command == "/persona":
-                self.handle_persona_command(arg)
+                await self.handle_persona_command(arg)
+                return True
+
+            elif command in ("/adapt", "/evolve"):
+                await self.handle_persona_adapt_command()
+                return True
+
+            elif command in ("/wipe", "/reset"):
+                self.handle_wipe_command(arg)
+                return True
+
+            elif command in ("/export", "/backup"):
+                self.handle_export_command(arg)
+                return True
+
+            elif command in ("/import", "/restore"):
+                self.handle_import_command(arg)
                 return True
 
             elif command == "/buffer":

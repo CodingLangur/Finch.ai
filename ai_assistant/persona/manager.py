@@ -22,6 +22,9 @@ DEFAULT_PERSONA_TEMPLATE = """# Assistant Persona & Guidelines
 1. Prioritize accuracy and efficiency over verbosity.
 2. Preserve user context and adhere strictly to user instructions.
 3. If the user asks you to adapt, modify, or change your personality, tone, behavior, or guidelines, you MUST acknowledge the change and emit the updated version of this entire document wrapped inside `<personality_update>...</personality_update>` tags so the system can save it to disk.
+
+## Learned Preferences & Adaptive Traits
+- No adaptive traits recorded yet. The assistant learns communication habits, tone preferences, and domain preferences across sessions.
 """
 
 TAG_PATTERN = re.compile(
@@ -31,7 +34,7 @@ TAG_PATTERN = re.compile(
 
 
 class PersonaManager:
-    """Manages reading, injecting, parsing, and persisting the assistant's persona."""
+    """Manages reading, injecting, parsing, persisting, adapting, and wiping the assistant's persona."""
 
     def __init__(self, file_path: str = "personality.md"):
         self.file_path = Path(file_path)
@@ -67,6 +70,13 @@ class PersonaManager:
 
         self.file_path.write_text(updated, encoding="utf-8")
         return updated.strip()
+
+    def wipe_persona(self) -> str:
+        """Reset personality.md back to the default template after creating a .bak backup."""
+        if self.file_path.exists():
+            shutil.copyfile(self.file_path, self.backup_path)
+        self.file_path.write_text(DEFAULT_PERSONA_TEMPLATE, encoding="utf-8")
+        return DEFAULT_PERSONA_TEMPLATE.strip()
 
     @staticmethod
     def parse_update_tags(text: str) -> Optional[str]:
@@ -124,3 +134,33 @@ class PersonaManager:
             "tags so the system can update personality.md."
         )
         return f"{persona}{protocol_suffix}"
+
+    @staticmethod
+    def build_adaptation_prompt(
+        current_persona: str,
+        session_summaries: list,
+    ) -> str:
+        """Compose the prompt instructing the model to synthesize session history into an evolved persona."""
+        summaries_text = []
+        for i, s in enumerate(session_summaries, 1):
+            if isinstance(s, dict):
+                title = s.get("title", f"Session {i}")
+                summary = s.get("summary", "No summary available.")
+            else:
+                title = getattr(s, "title", f"Session {i}")
+                summary = getattr(s, "summary", "No summary available.")
+            summaries_text.append(f"### Session {i}: {title}\n{summary}")
+
+        history_block = "\n\n".join(summaries_text) if summaries_text else "No prior session summaries available."
+
+        return (
+            "Analyze the recent conversational summaries and interactions below to adapt and evolve the assistant's personality.md file.\n\n"
+            f"--- CURRENT PERSONALITY.MD ---\n{current_persona}\n\n"
+            f"--- RECENT CONVERSATIONS & SUMMARIES ---\n{history_block}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Retain the core identity and operational safety rules.\n"
+            "2. Identify patterns in the user's communication style, preferred formatting, technical domains, and feedback.\n"
+            "3. Add or update the '## Learned Preferences & Adaptive Traits' section with specific, concrete bullet points.\n"
+            "4. Refine the '## Communication Style' section if clear preferences (e.g. brevity, code style, tone) emerged.\n"
+            "5. Emit the ENTIRE updated personality markdown wrapped inside <personality_update>...</personality_update> tags."
+        )

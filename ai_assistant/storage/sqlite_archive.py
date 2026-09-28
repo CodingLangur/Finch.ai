@@ -383,6 +383,142 @@ class SQLiteArchive:
                 )
                 return cursor.rowcount > 0
 
+    def wipe_session_messages(self, session_id: str) -> int:
+        """Delete all messages for a specific session without deleting the session itself."""
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                cursor = conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?",
+                    (session_id,),
+                )
+                deleted_count = cursor.rowcount
+                conn.execute(
+                    "UPDATE sessions SET summary = NULL, updated_at = ? WHERE id = ?",
+                    (utc_now_iso(), session_id),
+                )
+                if getattr(self, "_vec_enabled", False):
+                    try:
+                        conn.execute("DELETE FROM sessions_vec WHERE session_id = ?", (session_id,))
+                    except Exception:
+                        pass
+                return deleted_count
+
+    def wipe_all_conversations(self) -> Dict[str, int]:
+        """Wipe all sessions, messages, full-text index entries, and vector embeddings."""
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                c1 = conn.execute("SELECT COUNT(*) FROM sessions;").fetchone()[0]
+                c2 = conn.execute("SELECT COUNT(*) FROM messages;").fetchone()[0]
+
+                conn.execute("DELETE FROM messages;")
+                conn.execute("DELETE FROM sessions;")
+                try:
+                    conn.execute("DELETE FROM messages_fts;")
+                except Exception:
+                    pass
+                if getattr(self, "_vec_enabled", False):
+                    try:
+                        conn.execute("DELETE FROM sessions_vec;")
+                    except Exception:
+                        pass
+
+                return {"sessions_wiped": c1, "messages_wiped": c2}
+
+    def export_all_conversations(self) -> List[Dict[str, Any]]:
+        """Export all sessions and their messages as a list of dictionaries."""
+        with self._lock:
+            sessions = self.list_sessions(limit=100000)
+            exported = []
+            for s in sessions:
+                messages = self.get_messages(s.id, include_system=True)
+                exported.append({
+                    "session": {
+                        "id": s.id,
+                        "title": s.title,
+                        "summary": s.summary,
+                        "model": s.model,
+                        "mode": s.mode,
+                        "created_at": s.created_at,
+                        "updated_at": s.updated_at,
+                        "metadata": s.metadata,
+                    },
+                    "messages": [
+                        {
+                            "id": m.id,
+                            "session_id": m.session_id,
+                            "role": m.role,
+                            "content": m.content,
+                            "thinking": m.thinking,
+                            "tokens": m.tokens,
+                            "timestamp": m.timestamp,
+                            "metadata": m.metadata,
+                        }
+                        for m in messages
+                    ],
+                })
+            return exported
+
+    def import_conversations(self, data: List[Dict[str, Any]], mode: str = "merge") -> Dict[str, int]:
+        """Import sessions and messages from exported dictionaries."""
+        with self._lock:
+            conn = self._get_connection()
+            sessions_imported = 0
+            messages_imported = 0
+
+            with conn:
+                if mode == "replace":
+                    self.wipe_all_conversations()
+
+                for entry in data:
+                    s_data = entry.get("session", {})
+                    s_id = s_data.get("id")
+                    if not s_id:
+                        continue
+
+                    existing = self.get_session(s_id)
+                    if not existing:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO sessions (id, title, summary, model, mode, created_at, updated_at, metadata)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                s_id,
+                                s_data.get("title", "Imported Session"),
+                                s_data.get("summary"),
+                                s_data.get("model", "default"),
+                                s_data.get("mode", "chat"),
+                                s_data.get("created_at", utc_now_iso()),
+                                s_data.get("updated_at", utc_now_iso()),
+                                json.dumps(s_data.get("metadata", {})),
+                            ),
+                        )
+                        sessions_imported += 1
+
+                    for m in entry.get("messages", []):
+                        if mode == "merge":
+                            cursor = conn.execute(
+                                "SELECT id FROM messages WHERE session_id = ? AND role = ? AND timestamp = ? LIMIT 1;",
+                                (s_id, m.get("role"), m.get("timestamp")),
+                            )
+                            if cursor.fetchone():
+                                continue
+
+                        self.add_message(
+                            session_id=s_id,
+                            role=m.get("role", "user"),
+                            content=m.get("content", ""),
+                            thinking=m.get("thinking"),
+                            tokens=m.get("tokens"),
+                            timestamp=m.get("timestamp"),
+                            metadata=m.get("metadata"),
+                        )
+                        messages_imported += 1
+
+            return {"sessions_imported": sessions_imported, "messages_imported": messages_imported}
+
     def add_message(
         self,
         session_id: str,

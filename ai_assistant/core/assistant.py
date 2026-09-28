@@ -12,6 +12,7 @@ from ..providers.gemini_provider import GeminiProvider
 from ..providers.openai_provider import OpenAICompatibleProvider
 from ..storage.sqlite_archive import SQLiteArchive, SessionRecord, MessageRecord
 from ..storage.session_summarizer import SessionSummarizer
+from ..storage.backup import export_backup_bundle, import_backup_bundle
 from ..storage.search import (
     HybridSearchResult,
     SearchResult,
@@ -254,6 +255,140 @@ class AIAssistant:
     def clear_history(self) -> None:
         """Reset conversation memory while preserving system prompt."""
         self.memory.clear(keep_system=True)
+
+    def wipe_persona(self) -> str:
+        """Reset personality.md back to default template and refresh in-memory system prompt."""
+        content = self.persona_manager.wipe_persona()
+        new_system_prompt = self.persona_manager.build_system_prompt()
+        self.memory.set_system_prompt(new_system_prompt)
+        return content
+
+    def wipe_conversation(self, all_sessions: bool = False) -> Dict[str, Any]:
+        """Wipe conversation history.
+
+        Args:
+            all_sessions: If True, wipes all sessions and messages across the entire database.
+                          If False, wipes only the messages of the current active session.
+        """
+        self.clear_history()
+        if all_sessions:
+            stats = self.archive.wipe_all_conversations()
+            self.new_session(title="Fresh Session")
+            return {"all_sessions": True, **stats}
+        else:
+            wiped_count = self.archive.wipe_session_messages(self.current_session.id)
+            return {
+                "all_sessions": False,
+                "session_id": self.current_session.id,
+                "messages_wiped": wiped_count,
+            }
+
+    def export_backup(self, output_path: Optional[str] = None) -> str:
+        """Export conversation data and personality.md into a zip backup bundle."""
+        backup_dir = getattr(self.config, "backup_dir", "backups")
+        return export_backup_bundle(
+            archive=self.archive,
+            personality_path=self.config.personality_path,
+            output_path=output_path,
+            backup_dir=backup_dir,
+        )
+
+    def import_backup(self, backup_path: str, mode: str = "replace") -> Dict[str, Any]:
+        """Restore conversation data and personality.md from a zip backup bundle."""
+        result = import_backup_bundle(
+            archive=self.archive,
+            personality_path=self.config.personality_path,
+            backup_path=backup_path,
+            mode=mode,
+        )
+        self.reload_persona()
+        if mode == "replace":
+            recent = self.archive.list_sessions(limit=1)
+            if recent:
+                self.current_session = recent[0]
+            else:
+                self.new_session(title="Restored Session")
+        self.clear_history()
+        return result
+
+    async def adapt_persona(
+        self, session_ids: Optional[List[str]] = None, lookback_sessions: int = 5
+    ) -> Tuple[bool, str]:
+        """Analyze recent conversation summaries and adapt personality.md to user preferences."""
+        if session_ids:
+            sessions = [
+                s for sid in session_ids
+                if (s := self.archive.get_session(sid)) is not None
+            ]
+        else:
+            sessions = self.archive.list_sessions(limit=lookback_sessions)
+
+        if not sessions:
+            return False, "No sessions found in the archive to adapt from."
+
+        summaries_data: List[Dict[str, str]] = []
+        for s in sessions:
+            title = s.title
+            summary = s.summary
+            if not summary:
+                msgs = self.archive.get_messages(s.id, include_system=False)
+                if any(m.role.lower() == "user" for m in msgs):
+                    try:
+                        title, summary = await self.summarize_session(s.id)
+                    except Exception:
+                        summary = None
+            if summary:
+                summaries_data.append({"title": title, "summary": summary})
+
+        if not summaries_data:
+            msgs = self.archive.get_messages(self.current_session.id, include_system=False)
+            user_msgs = [m for m in msgs if m.role.lower() == "user"]
+            if user_msgs:
+                sample = "\n".join(f"{m.role}: {m.content[:200]}" for m in msgs[-6:])
+                summaries_data.append({"title": "Current Session Context", "summary": sample})
+            else:
+                return False, "No conversational interactions with user turns found to adapt persona."
+
+        current_persona = self.persona_manager.load_persona()
+        prompt = self.persona_manager.build_adaptation_prompt(current_persona, summaries_data)
+
+        messages_payload = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an AI persona adaptation specialist. Analyze conversation history and refine "
+                    "personality.md to better match the user's communication style, interests, and domain preferences. "
+                    "Ensure you emit the complete updated persona inside <personality_update>...</personality_update> tags."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        accumulated: List[str] = []
+        try:
+            async for chunk in self.provider.stream_chat(
+                messages=messages_payload,
+                model=self.active_model,
+                tools=None,
+            ):
+                if chunk.delta:
+                    accumulated.append(chunk.delta)
+        except Exception as e:
+            return False, f"LLM provider error during persona adaptation: {e}"
+
+        raw_response = "".join(accumulated).strip()
+        clean_text, updated, new_content = self.persona_manager.process_response(raw_response)
+
+        if updated and new_content:
+            self.reload_persona()
+            return True, "Persona successfully adapted to user interactions and updated on disk!"
+
+        if "# Assistant Persona" in raw_response:
+            self.persona_manager.save_persona(raw_response)
+            self.reload_persona()
+            return True, "Persona updated from model markdown output."
+
+        return False, "Model did not produce an updated persona inside <personality_update> tags."
 
     async def list_available_models(self) -> List[ModelInfo]:
         """Query available models from the provider."""

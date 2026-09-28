@@ -21,8 +21,11 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - **Live Compression Telemetry**: Displays token counts before/after, tokens saved, percentage reduction, and applied transforms.
 - **Dynamic Persona Management (`personality.md`)**:
   - **File-First Injection**: Loads identity, style, and rules from `personality.md` on startup as the pinned system prompt.
+  - **Adaptive Evolution Over Uses**: Synthesizes recent conversation summaries and user interactions into learned preferences (`/persona adapt` or automatic post-session adaptation).
   - **Model-Driven Updates**: When asked to adapt its persona, the model emits `<personality_update>...</personality_update>` tags.
-  - **Automatic Persistence & Backup**: Captures and validates the update, backs up previous version to `personality.md.bak`, and live-updates in-memory context without restarting.
+  - **Automatic Persistence & Backup**: Captures and validates updates, backs up previous version to `personality.md.bak`, and live-updates in-memory context without restarting.
+  - **Independent Wiping**: Safely wipe conversation history (`/wipe conversation [current|all]`) and reset `personality.md` (`/wipe persona`) separately.
+  - **Backup Export & Import**: Bundle conversations (`conversations.db`, `conversations.json`, `manifest.json`) and `personality.md` into a single portable zip archive (`/export`), and restore seamlessly (`/import`).
 - **Model Discovery & Switching**: Query installed Ollama models (`/models`) and switch on-the-fly (`/use <model>`).
 - **Sliding-Window Message Buffer**: In-memory context retention (default: 8 messages / 4 turns) with pinned system prompt preservation.
 - **Real-Time Telemetry & Profiling**: Live token streaming with exact per-turn stats:
@@ -97,13 +100,16 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - `/vacuum` or `/maintenance` - Reclaim disk space (WAL checkpoint + optimize + VACUUM)
   - `/archive [days]` - Move sessions older than N days to an archive database
   - `/compress [on|off|stats]` - Toggle or inspect Headroom context compression
-  - `/persona [reload|edit]` - View, reload, or see edit path for `personality.md`
+  - `/persona [reload|edit|adapt|wipe]` - View, reload, adapt, or reset `personality.md`
+  - `/wipe <conversation|persona>` - Wipe conversation history (`current` or `all`) or reset `personality.md` separately
+  - `/export [filepath]` - Bundle conversation data and `personality.md` into backup (.zip)
+  - `/import <filepath> [mode]` - Restore conversation data and `personality.md` from backup archive
   - `/models` - List available models with sizes and parameter counts
   - `/use <model>` - Switch active model dynamically
   - `/mode [chat|agent]` - Inspect or toggle between Chat and Agent modes
   - `/tools [cat] [on|off]` - View or toggle agent tool access (terminal, python, web, files)
   - `/buffer` - View active context window and character/token breakdown
-  - `/clear` - Reset conversation history while preserving system prompt
+  - `/clear` - Reset in-memory conversation history while preserving system prompt
   - `/system [prompt]` - View or modify pinned system prompt directly
   - `/help` - Show command reference
   - `/exit` or `/quit` - Quit session (auto-summarizes & vector indexes unless empty)

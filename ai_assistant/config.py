@@ -134,6 +134,12 @@ class AppConfig:
     terminal_timeout: float = field(
         default_factory=lambda: float(os.getenv("TERMINAL_TIMEOUT", "30.0"))
     )
+    backup_dir: str = field(
+        default_factory=lambda: os.getenv("BACKUP_DIR", "backups")
+    )
+    auto_adapt_persona: bool = field(
+        default_factory=lambda: os.getenv("AUTO_ADAPT_PERSONA", "false").lower() in ("true", "1", "yes")
+    )
 
 
 # Global singleton configuration

@@ -38,10 +38,11 @@ def export_backup_bundle(
         if parent:
             os.makedirs(parent, exist_ok=True)
 
-    # 1. Export conversation data
+    # 1. Export conversation data and long-term user facts
     conversations_data = archive.export_all_conversations()
     session_count = len(conversations_data)
     message_count = sum(len(c.get("messages", [])) for c in conversations_data)
+    facts_data = archive.list_facts() if hasattr(archive, "list_facts") else []
 
     # 2. Read personality markdown
     persona_file = Path(personality_path)
@@ -56,10 +57,12 @@ def export_backup_bundle(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "sessions_count": session_count,
         "messages_count": message_count,
+        "facts_count": len(facts_data),
         "persona_bytes": len(persona_content.encode("utf-8")),
         "db_filename": "conversations.db",
         "persona_filename": "personality.md",
         "json_filename": "conversations.json",
+        "facts_filename": "user_facts.json",
     }
 
     # 4. Pack into zip archive
@@ -80,12 +83,16 @@ def export_backup_bundle(
         with open(conv_json_path, "w", encoding="utf-8") as f:
             json.dump(conversations_data, f, indent=2)
 
+        # Write user_facts.json
+        facts_json_path = os.path.join(temp_dir, "user_facts.json")
+        with open(facts_json_path, "w", encoding="utf-8") as f:
+            json.dump(facts_data, f, indent=2)
+
         # Create a clean SQLite snapshot using SQLite backup API if available
         db_snap_path = os.path.join(temp_dir, "conversations.db")
         try:
             with archive._lock:
                 src_conn = archive._get_connection()
-                # Checkpoint WAL to consolidate data
                 try:
                     src_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 except Exception:
@@ -96,7 +103,6 @@ def export_backup_bundle(
                 finally:
                     dest_conn.close()
         except Exception:
-            # If sqlite backup fails, conversations.json provides complete redundancy
             pass
 
         # Package zip
@@ -104,6 +110,7 @@ def export_backup_bundle(
             zf.write(manifest_path, arcname="manifest.json")
             zf.write(persona_out_path, arcname="personality.md")
             zf.write(conv_json_path, arcname="conversations.json")
+            zf.write(facts_json_path, arcname="user_facts.json")
             if os.path.exists(db_snap_path):
                 zf.write(db_snap_path, arcname="conversations.db")
 
@@ -174,12 +181,23 @@ def import_backup_bundle(
             sessions_restored = stats.get("sessions_imported", 0)
             messages_restored = stats.get("messages_imported", 0)
 
+        # 4. Restore user facts
+        facts_json_path = os.path.join(temp_dir, "user_facts.json")
+        facts_restored = 0
+        if os.path.exists(facts_json_path) and hasattr(archive, "import_facts"):
+            if mode == "replace" and hasattr(archive, "wipe_all_facts"):
+                archive.wipe_all_facts()
+            with open(facts_json_path, "r", encoding="utf-8") as f:
+                facts_data = json.load(f)
+            facts_restored = archive.import_facts(facts_data)
+
         return {
             "success": True,
             "backup_path": clean_path,
             "persona_restored": persona_restored,
             "sessions_restored": sessions_restored,
             "messages_restored": messages_restored,
+            "facts_restored": facts_restored,
             "mode": mode,
             "manifest": manifest_data,
         }

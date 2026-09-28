@@ -13,6 +13,7 @@ from ..providers.openai_provider import OpenAICompatibleProvider
 from ..storage.sqlite_archive import SQLiteArchive, SessionRecord, MessageRecord
 from ..storage.session_summarizer import SessionSummarizer
 from ..storage.backup import export_backup_bundle, import_backup_bundle
+from ..storage.transcript_exporter import export_transcript_markdown, export_transcript_html
 from ..storage.search import (
     HybridSearchResult,
     SearchResult,
@@ -62,6 +63,21 @@ class AssistantMode(str, Enum):
 AssistantMode.CHATBOT = AssistantMode.CHAT
 
 
+class ToolPermissionMode(str):
+    """3-state tool permission mode ('off', 'ask', 'auto') with boolean evaluation support.
+
+    Evaluates to False if 'off', and True if 'ask' or 'auto', preserving backward-compatibility
+    with binary boolean checks.
+    """
+
+    OFF = "off"
+    ASK = "ask"
+    AUTO = "auto"
+
+    def __bool__(self) -> bool:
+        return self.lower() not in ("off", "disabled", "false", "0")
+
+
 class AIAssistant:
     """Central orchestrator for local LLM chat, context compression, and future agentic flows."""
 
@@ -97,9 +113,18 @@ class AIAssistant:
         self.active_model = model or self.config.effective_model
         self.mode = AssistantMode(self.config.default_mode)
 
-        # Initialize PersonaManager and inject personality.md as system prompt
+        # Initialize SQLite Archive & Session Logging first (needed for facts & memory)
+        self.archive = archive or SQLiteArchive(
+            db_path=self.config.db_path,
+            embedding_dim=self.config.embedding_dim,
+            compress_large_messages=getattr(self.config, "compress_message_bodies", False),
+            compression_threshold_bytes=getattr(self.config, "message_compression_threshold", 1024),
+        )
+        self.summarizer = SessionSummarizer(archive=self.archive, provider=self.provider)
+
+        # Initialize PersonaManager and inject combined persona + user facts as system prompt
         self.persona_manager = PersonaManager(file_path=self.config.personality_path)
-        system_prompt = self.persona_manager.build_system_prompt()
+        system_prompt = self.build_effective_system_prompt()
 
         self.memory = SlidingWindowBuffer(
             max_messages=self.config.window_size,
@@ -115,23 +140,25 @@ class AIAssistant:
             min_tokens_to_compress=self.config.compression_min_tokens,
         )
 
-        # Initialize SQLite Archive & Session Logging
-        self.archive = archive or SQLiteArchive(
-            db_path=self.config.db_path,
-            embedding_dim=self.config.embedding_dim,
-            compress_large_messages=getattr(self.config, "compress_message_bodies", False),
-            compression_threshold_bytes=getattr(self.config, "message_compression_threshold", 1024),
-        )
-        self.summarizer = SessionSummarizer(archive=self.archive, provider=self.provider)
+        # Agent mode tool permission policy: 3-state control ('off', 'ask', 'auto')
+        def _resolve_tool_mode(flag: Any) -> ToolPermissionMode:
+            if isinstance(flag, str):
+                v = flag.strip().lower()
+                if v in ("auto", "full", "ai_control", "true", "1", "yes"):
+                    return ToolPermissionMode("auto")
+                if v in ("ask", "confirm", "prompt"):
+                    return ToolPermissionMode("ask")
+                return ToolPermissionMode("off")
+            return ToolPermissionMode("auto" if bool(flag) else "off")
 
-        # Agent mode tool permission policy: individual category toggles
-        self.tool_permissions: Dict[str, bool] = {
-            "terminal": getattr(self.config, "enable_terminal_tool", True),
-            "python": getattr(self.config, "enable_python_tool", True),
-            "web": getattr(self.config, "enable_web_tool", False),
-            "files": getattr(self.config, "enable_file_tools", True),
+        self.tool_permissions: Dict[str, ToolPermissionMode] = {
+            "terminal": _resolve_tool_mode(getattr(self.config, "enable_terminal_tool", True)),
+            "python": _resolve_tool_mode(getattr(self.config, "enable_python_tool", True)),
+            "web": _resolve_tool_mode(getattr(self.config, "enable_web_tool", False)),
+            "files": _resolve_tool_mode(getattr(self.config, "enable_file_tools", True)),
         }
         self.tool_dispatcher = ToolDispatcher(self)
+        self.tool_confirmation_callback = None
 
         # Create the initial active session in SQLite
         self.current_session: SessionRecord = self.archive.create_session(
@@ -145,27 +172,53 @@ class AIAssistant:
                 content=system_prompt,
             )
 
+    def get_tool_permission_mode(self, category: str) -> str:
+        """Get the current permission mode ('off', 'ask', 'auto') for a category."""
+        return str(self.tool_permissions.get(category.lower(), ToolPermissionMode("off")))
+
     def is_tool_category_enabled(self, category: str) -> bool:
-        """Check if a tool category (terminal, python, web, files) is currently enabled."""
-        return self.tool_permissions.get(category.lower(), False)
+        """Check if a tool category is enabled (either 'ask' or 'auto')."""
+        return self.get_tool_permission_mode(category) in ("ask", "auto")
 
-    def set_tool_permission(self, category: str, enabled: bool) -> bool:
-        """Set permission for a tool category. Returns the new boolean state."""
+    def set_tool_permission(self, category: str, mode: Any) -> ToolPermissionMode:
+        """Set permission mode ('off', 'ask', 'auto') for a tool category."""
         cat = category.lower()
         if cat not in self.tool_permissions:
             raise ValueError(f"Unknown tool category '{category}'. Available: {list(self.tool_permissions.keys())}")
-        self.tool_permissions[cat] = bool(enabled)
-        return self.tool_permissions[cat]
 
-    def toggle_tool_permission(self, category: str) -> bool:
-        """Toggle permission for a tool category on or off. Returns the new state."""
+        if isinstance(mode, bool):
+            normalized = "auto" if mode else "off"
+        elif isinstance(mode, str):
+            v = mode.strip().lower()
+            if v in ("auto", "full", "ai_control", "on", "enable", "true", "1"):
+                normalized = "auto"
+            elif v in ("ask", "confirm", "prompt"):
+                normalized = "ask"
+            elif v in ("off", "disable", "disabled", "false", "0"):
+                normalized = "off"
+            else:
+                normalized = "ask"
+        else:
+            normalized = "auto" if bool(mode) else "off"
+
+        perm = ToolPermissionMode(normalized)
+        self.tool_permissions[cat] = perm
+        return perm
+
+    def toggle_tool_permission(self, category: str) -> ToolPermissionMode:
+        """Toggle permission for a category cycling through: off -> ask -> auto -> off."""
         cat = category.lower()
         if cat not in self.tool_permissions:
             raise ValueError(f"Unknown tool category '{category}'. Available: {list(self.tool_permissions.keys())}")
-        self.tool_permissions[cat] = not self.tool_permissions[cat]
-        return self.tool_permissions[cat]
 
-    def get_tool_permissions(self) -> Dict[str, bool]:
+        current = str(self.tool_permissions[cat]).lower()
+        cycle = {"off": "ask", "ask": "auto", "auto": "off"}
+        new_mode = cycle.get(current, "ask")
+        perm = ToolPermissionMode(new_mode)
+        self.tool_permissions[cat] = perm
+        return perm
+
+    def get_tool_permissions(self) -> Dict[str, ToolPermissionMode]:
         """Return a copy of the current tool permissions dict."""
         return dict(self.tool_permissions)
 
@@ -193,12 +246,78 @@ class AIAssistant:
             tools.extend([READ_FILE_TOOL, WRITE_FILE_TOOL, LIST_DIRECTORY_TOOL])
         return tools
 
+    def build_effective_system_prompt(self) -> str:
+        """Compose the complete system prompt including persona guidelines and user memory facts."""
+        base_prompt = self.persona_manager.build_system_prompt()
+        if hasattr(self, "archive") and hasattr(self.archive, "list_facts"):
+            facts = self.archive.list_facts()
+            if facts:
+                facts_lines = [
+                    "\n\n---\n### Verified User Facts & Long-Term Memory",
+                    "The following verified facts and preferences about the user and their environment are stored in long-term memory:",
+                ]
+                for f in facts:
+                    cat = f.get("category", "general")
+                    facts_lines.append(f"- [Fact #{f['id']}] ({cat}): {f['fact']}")
+                return base_prompt + "\n" + "\n".join(facts_lines)
+        return base_prompt
+
+    def refresh_system_prompt(self) -> str:
+        """Re-synthesize system prompt with persona and facts, and update sliding-window memory."""
+        prompt = self.build_effective_system_prompt()
+        self.memory.set_system_prompt(prompt)
+        return prompt
+
     def reload_persona(self) -> str:
-        """Reload personality.md from disk and refresh the pinned system prompt."""
+        """Reload personality.md from disk and refresh the pinned system prompt with user facts."""
         content = self.persona_manager.load_persona()
-        new_system_prompt = self.persona_manager.build_system_prompt()
-        self.memory.set_system_prompt(new_system_prompt)
+        self.refresh_system_prompt()
         return content
+
+    def add_user_fact(self, fact: str, category: str = "general") -> int:
+        """Store a verified user fact in long-term memory and refresh system prompt."""
+        fact_id = self.archive.add_fact(fact=fact, category=category)
+        self.refresh_system_prompt()
+        return fact_id
+
+    def list_user_facts(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieve stored user facts from long-term memory."""
+        return self.archive.list_facts(category=category)
+
+    def delete_user_fact(self, fact_id: int) -> bool:
+        """Delete a user fact by ID and refresh system prompt."""
+        deleted = self.archive.delete_fact(fact_id)
+        if deleted:
+            self.refresh_system_prompt()
+        return deleted
+
+    def wipe_user_facts(self) -> int:
+        """Wipe all user facts from long-term memory and refresh system prompt."""
+        count = self.archive.wipe_all_facts()
+        self.refresh_system_prompt()
+        return count
+
+    def export_transcript_markdown(
+        self, session_id: Optional[str] = None, output_path: Optional[str] = None
+    ) -> str:
+        """Export session transcript to a GitHub-flavored Markdown file."""
+        target_id = session_id or self.current_session.id
+        return export_transcript_markdown(
+            archive=self.archive,
+            session_id=target_id,
+            output_path=output_path,
+        )
+
+    def export_transcript_html(
+        self, session_id: Optional[str] = None, output_path: Optional[str] = None
+    ) -> str:
+        """Export session transcript to a standalone, responsive HTML file."""
+        target_id = session_id or self.current_session.id
+        return export_transcript_html(
+            archive=self.archive,
+            session_id=target_id,
+            output_path=output_path,
+        )
 
     def set_mode(self, mode: AssistantMode | str) -> AssistantMode:
         """Switch between Chat and Agent modes."""

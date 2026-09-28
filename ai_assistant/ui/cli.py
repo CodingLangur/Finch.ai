@@ -29,6 +29,37 @@ class InteractiveCLI:
     def __init__(self, assistant: AIAssistant):
         self.assistant = assistant
         self.console = Console()
+        self.assistant.tool_confirmation_callback = self.prompt_tool_confirmation
+
+    async def prompt_tool_confirmation(self, tool_name: str, args: Dict[str, Any]) -> bool:
+        """Prompt user for interactive confirmation before executing a tool in 'ask' mode."""
+        self.console.print()
+        arg_preview = self.assistant._format_tool_notice(tool_name, args)
+        self.console.print(
+            f"[bold yellow]⚠️  Tool Confirmation Requested:[/bold yellow] "
+            f"The agent requests to run [bold cyan]{tool_name}[/bold cyan][white]{arg_preview}[/white]"
+        )
+        if isinstance(args, dict) and args:
+            try:
+                compact_args = json.dumps(args, indent=2)
+                if len(compact_args) > 240:
+                    compact_args = compact_args[:235] + "\n..."
+                self.console.print(f"[dim]{compact_args}[/dim]")
+            except Exception:
+                pass
+
+        try:
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(None, input, "➤ Allow execution? [y/N]: ")
+            confirmed = resp.strip().lower() in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            confirmed = False
+
+        if confirmed:
+            self.console.print("[bold green]✓ Execution approved by user.[/bold green]\n")
+        else:
+            self.console.print("[bold red]✗ Execution cancelled by user.[/bold red]\n")
+        return confirmed
 
     def print_welcome_banner(self) -> None:
         """Display an eye-catching welcome header with session parameters."""
@@ -81,11 +112,14 @@ class InteractiveCLI:
         table.add_row("/models", "List available models with metadata")
         table.add_row("/use <name>", "Switch active model (e.g. /use gemini-2.5-flash)")
         table.add_row("/mode [chat|agent]", "Toggle or set assistant mode (chat vs agent)")
-        table.add_row("/tools [cat] [on|off]", "View or toggle agent tool access (terminal, python, web, files)")
+        table.add_row("/tools [cat] [off|ask|auto]", "Tool policy: OFF, ASK (Confirm with User), or AUTO (Full Control)")
+        table.add_row("/remember <fact>", "Store an enduring fact or preference in long-term memory")
+        table.add_row("/forget <id>", "Remove a fact from long-term memory")
+        table.add_row("/facts, /memory", "List all persistent facts stored in long-term memory")
         table.add_row("/compress [on|off|stats]", "Toggle or inspect Headroom context compression")
         table.add_row("/persona [reload|edit|adapt|wipe]", "View, reload, adapt, or reset personality.md")
-        table.add_row("/wipe <conversation|persona>", "Wipe conversation history or reset personality.md separately")
-        table.add_row("/export [filepath]", "Bundle conversation data and personality.md for backup (.zip)")
+        table.add_row("/wipe <conversation|persona|memory>", "Wipe conversation history, persona, or memory facts separately")
+        table.add_row("/export [backup|md|html] [path]", "Export backup bundle (.zip), Markdown transcript, or HTML")
         table.add_row("/import <filepath> [mode]", "Restore conversation data and personality.md from backup")
         table.add_row("/buffer", "Inspect current sliding-window message buffer")
         table.add_row("/clear", "Clear message history (retains system prompt)")
@@ -215,17 +249,112 @@ class InteractiveCLI:
                     f"[bold green]✓ Successfully wiped conversation messages for active session![/bold green]\n"
                     f"Removed [bold white]{stats.get('messages_wiped', 0)}[/bold white] message(s). In-memory buffer cleared.\n"
                 )
+        elif target in ("memory", "facts", "fact"):
+            count = self.assistant.wipe_user_facts()
+            self.console.print(
+                f"[bold green]✓ Successfully wiped all user facts from long-term memory![/bold green]\n"
+                f"Removed [bold white]{count}[/bold white] fact(s).\n"
+            )
         else:
             self.console.print(
                 "[yellow]Usage: /wipe <target>[/yellow]\n"
                 "  [bold cyan]/wipe conversation [current|all][/bold cyan] - Wipe conversation history\n"
                 "  [bold cyan]/wipe persona[/bold cyan]                 - Reset personality.md to default template (backs up to .bak)\n"
+                "  [bold cyan]/wipe memory[/bold cyan]                  - Clear all stored user facts and preferences\n"
             )
 
+    def handle_remember_command(self, arg: str) -> None:
+        """Store a fact or preference in long-term memory."""
+        fact = arg.strip()
+        if not fact:
+            self.console.print("[yellow]Usage: /remember <fact or preference to store>[/yellow]\n")
+            return
+        fact_id = self.assistant.add_user_fact(fact=fact)
+        self.console.print(
+            f"[bold green]✓ Stored in long-term memory (ID #{fact_id}):[/bold green] {fact}\n"
+            "[dim]This fact is now pinned in system memory across all sessions.[/dim]\n"
+        )
+
+    def handle_forget_command(self, arg: str) -> None:
+        """Remove a fact from long-term memory by ID."""
+        if not arg.strip():
+            self.console.print("[yellow]Usage: /forget <fact_id>[/yellow]\n")
+            return
+        try:
+            fid = int(arg.strip())
+        except ValueError:
+            self.console.print("[bold red]Error: Fact ID must be an integer.[/bold red]\n")
+            return
+
+        deleted = self.assistant.delete_user_fact(fid)
+        if deleted:
+            self.console.print(f"[bold green]✓ Fact #{fid} removed from long-term memory.[/bold green]\n")
+        else:
+            self.console.print(f"[yellow]Fact #{fid} not found in memory.[/yellow]\n")
+
+    def handle_facts_command(self, arg: str) -> None:
+        """Display all stored facts in long-term memory."""
+        facts = self.assistant.list_user_facts()
+        if not facts:
+            self.console.print("[yellow]No facts stored in long-term memory yet. Use /remember <fact> to add one.[/yellow]\n")
+            return
+
+        table = Table(title=f"🧠 Long-Term Memory Facts ({len(facts)} stored)", box=ROUNDED, header_style="bold cyan")
+        table.add_column("ID", justify="center", style="bold yellow", width=6)
+        table.add_column("Category", style="cyan", width=14)
+        table.add_column("Fact / Preference", style="bold white")
+        table.add_column("Recorded", style="dim", width=19)
+
+        for f in facts:
+            table.add_row(
+                str(f["id"]),
+                f.get("category", "general"),
+                f["fact"],
+                f.get("created_at", "")[:19].replace("T", " "),
+            )
+
+        self.console.print(table)
+        self.console.print("[dim]Use [bold cyan]/remember <fact>[/bold cyan] to add or [bold cyan]/forget <id>[/bold cyan] to delete.[/dim]\n")
+
     def handle_export_command(self, arg: str) -> None:
-        """Export conversation data and personality.md to a backup zip bundle."""
-        target_path = arg.strip() if arg.strip() else None
-        with self.console.status("[bold cyan]Creating backup bundle (conversations + personality)...[/bold cyan]"):
+        """Export conversation data, persona, or readable transcripts (Markdown / HTML)."""
+        parts = arg.strip().split(maxsplit=2)
+        subcmd = parts[0].lower() if parts else ""
+
+        if subcmd in ("md", "markdown"):
+            target_id = parts[1] if len(parts) > 1 and not parts[1].endswith(".md") else None
+            out_file = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 and parts[1].endswith(".md") else None)
+            with self.console.status("[bold cyan]Exporting Markdown transcript...[/bold cyan]"):
+                try:
+                    path = self.assistant.export_transcript_markdown(session_id=target_id, output_path=out_file)
+                    size = os.path.getsize(path)
+                except Exception as e:
+                    self.console.print(f"[bold red]Markdown export failed:[/bold red] {e}\n")
+                    return
+            self.console.print(
+                f"[bold green]✓ Markdown Transcript Exported:[/bold green] [bold cyan]{path}[/bold cyan] ({size:,} bytes)\n"
+            )
+            return
+
+        elif subcmd in ("html", "web"):
+            target_id = parts[1] if len(parts) > 1 and not parts[1].endswith(".html") else None
+            out_file = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 and parts[1].endswith(".html") else None)
+            with self.console.status("[bold cyan]Exporting HTML transcript...[/bold cyan]"):
+                try:
+                    path = self.assistant.export_transcript_html(session_id=target_id, output_path=out_file)
+                    size = os.path.getsize(path)
+                except Exception as e:
+                    self.console.print(f"[bold red]HTML export failed:[/bold red] {e}\n")
+                    return
+            self.console.print(
+                f"[bold green]✓ Standalone HTML Transcript Exported:[/bold green] [bold cyan]{path}[/bold cyan] ({size:,} bytes)\n"
+                f"[dim]You can open this file in any web browser to view the dialogue transcript.[/dim]\n"
+            )
+            return
+
+        # Default: Full backup export bundle (.zip)
+        target_path = arg.strip() if arg.strip() and subcmd not in ("backup", "zip", "all") else (parts[1] if len(parts) > 1 else None)
+        with self.console.status("[bold cyan]Creating backup bundle (conversations + personality + facts)...[/bold cyan]"):
             try:
                 zip_path = self.assistant.export_backup(output_path=target_path)
                 file_size = os.path.getsize(zip_path)
@@ -239,7 +368,7 @@ class InteractiveCLI:
 
         grid.add_row("Backup Bundle:", zip_path)
         grid.add_row("Bundle Size:", f"{file_size:,} bytes ({file_size/1024:.1f} KB)")
-        grid.add_row("Contents:", "conversations.db, conversations.json, personality.md, manifest.json")
+        grid.add_row("Contents:", "conversations.db, conversations.json, personality.md, user_facts.json, manifest.json")
         grid.add_row("Active Persona:", self.assistant.config.personality_path)
 
         panel = Panel(
@@ -695,7 +824,7 @@ class InteractiveCLI:
         )
 
     def handle_tools_command(self, arg: str) -> None:
-        """Inspect or toggle individual agent tool permissions."""
+        """Inspect or toggle 3-state agent tool permissions: OFF, ASK (Confirm), AUTO (Complete AI Control)."""
         parts = arg.strip().split()
         if not parts:
             perms = self.assistant.get_tool_permissions()
@@ -705,10 +834,10 @@ class InteractiveCLI:
                 header_style="bold cyan",
             )
             table.add_column("Category", style="bold white", width=12)
-            table.add_column("Status", justify="center", width=10)
-            table.add_column("Tools Included", style="cyan", width=36)
+            table.add_column("Status / Policy", justify="center", width=26)
+            table.add_column("Tools Included", style="cyan", width=34)
             table.add_column("Description", style="dim")
-            table.add_column("Toggle Command", style="yellow")
+            table.add_column("Cycle Command", style="yellow")
 
             meta = [
                 ("terminal", "run_terminal_command", "Local shell execution, git, command-line inspection"),
@@ -717,14 +846,29 @@ class InteractiveCLI:
                 ("files", "read_file, write_file, list_directory", "Workspace file system reading, writing, and listing"),
             ]
 
+            has_auto = False
             for cat, tools, desc in meta:
-                enabled = perms.get(cat, False)
-                status = "[bold green]ENABLED[/bold green]" if enabled else "[bold red]DISABLED[/bold red]"
-                toggle_cmd = f"/tools {cat} {'off' if enabled else 'on'}"
+                mode = perms.get(cat, "off")
+                if mode == "auto":
+                    status = "[bold yellow]⚡ AUTO (Complete AI Control)[/bold yellow]"
+                    next_mode = "off"
+                    has_auto = True
+                elif mode == "ask":
+                    status = "[bold cyan]🛡️  ASK (Confirm with User)[/bold cyan]"
+                    next_mode = "auto"
+                else:
+                    status = "[bold red]🚫 OFF (Disabled)[/bold red]"
+                    next_mode = "ask"
+
+                toggle_cmd = f"/tools {cat} {next_mode}"
                 table.add_row(cat.capitalize(), status, tools, desc, toggle_cmd)
 
             self.console.print(table)
-            self.console.print("[dim]Use [bold cyan]/tools <category> [on|off][/bold cyan] to change permissions.[/dim]\n")
+            if has_auto:
+                self.console.print(
+                    "[bold yellow]⚠️  Notice: One or more tool categories are in Complete AI Control (AUTO) mode without human confirmation.[/bold yellow]"
+                )
+            self.console.print("[dim]Use [bold cyan]/tools <category> [off|ask|auto][/bold cyan] to change permissions.[/dim]\n")
             return
 
         cat = parts[0].lower()
@@ -733,18 +877,30 @@ class InteractiveCLI:
             return
 
         action = parts[1].lower() if len(parts) > 1 else "toggle"
-        if action in ("on", "enable", "true", "1"):
-            self.assistant.set_tool_permission(cat, True)
-            self.console.print(f"[bold green]✓ {cat.capitalize()} access is now ENABLED for the agent.[/bold green]\n")
-        elif action in ("off", "disable", "false", "0"):
-            self.assistant.set_tool_permission(cat, False)
-            self.console.print(f"[bold yellow]✓ {cat.capitalize()} access is now DISABLED for the agent.[/bold yellow]\n")
-        elif action in ("toggle",):
-            new_state = self.assistant.toggle_tool_permission(cat)
-            state_str = "[bold green]ENABLED[/bold green]" if new_state else "[bold yellow]DISABLED[/bold yellow]"
-            self.console.print(f"[bold cyan]✓ {cat.capitalize()} access toggled to:[/bold cyan] {state_str}\n")
+        if action in ("toggle",):
+            new_mode = self.assistant.toggle_tool_permission(cat)
         else:
-            self.console.print(f"[yellow]Usage: /tools {cat} [on|off][/yellow]\n")
+            new_mode = self.assistant.set_tool_permission(cat, action)
+
+        if new_mode == "auto":
+            self.console.print(f"[bold yellow]✓ {cat.capitalize()} access is now ENABLED (AUTO - Complete AI Control).[/bold yellow]")
+            self.console.print(
+                Panel(
+                    f"[bold yellow]⚠️  WARNING: Complete AI Control enabled for '{cat.upper()}' tools![/bold yellow]\n"
+                    "The AI can execute commands, run code, or modify files autonomously without human confirmation.\n"
+                    f"[italic dim]If you prefer reviewing actions before execution, switch to ask mode: /tools {cat} ask[/italic dim]",
+                    border_style="yellow",
+                    box=ROUNDED,
+                )
+            )
+            self.console.print()
+        elif new_mode == "ask":
+            self.console.print(
+                f"[bold cyan]✓ {cat.capitalize()} access is now ENABLED (ASK - Human in the Loop confirmation).[/bold cyan]\n"
+                "[dim]Finch.ai will ask for your confirmation before running each tool.[/dim]\n"
+            )
+        else:
+            self.console.print(f"[bold red]✓ {cat.capitalize()} access is now DISABLED (OFF).[/bold red]\n")
 
     async def _cleanup_and_exit(self) -> None:
         """Run session exit hooks (fast background summarization) and cleanly close database."""
@@ -876,6 +1032,18 @@ class InteractiveCLI:
 
             elif command in ("/import", "/restore"):
                 self.handle_import_command(arg)
+                return True
+
+            elif command in ("/remember", "/recall"):
+                self.handle_remember_command(arg)
+                return True
+
+            elif command == "/forget":
+                self.handle_forget_command(arg)
+                return True
+
+            elif command in ("/facts", "/fact", "/memory"):
+                self.handle_facts_command(arg)
                 return True
 
             elif command == "/buffer":

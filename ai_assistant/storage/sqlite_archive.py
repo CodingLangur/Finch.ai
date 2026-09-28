@@ -141,6 +141,22 @@ class SQLiteArchive:
                     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);"
                 )
 
+                # Long-Term User Facts & Core Memory
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_facts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        fact TEXT NOT NULL,
+                        category TEXT NOT NULL DEFAULT 'general',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_user_facts_category ON user_facts(category);"
+                )
+
                 # FTS5 Virtual Table for Fast Lexical Search
                 conn.execute(
                     """
@@ -518,6 +534,90 @@ class SQLiteArchive:
                         messages_imported += 1
 
             return {"sessions_imported": sessions_imported, "messages_imported": messages_imported}
+
+    def add_fact(self, fact: str, category: str = "general") -> int:
+        """Store a verified user fact in long-term memory."""
+        clean_fact = fact.strip()
+        if not clean_fact:
+            raise ValueError("Fact cannot be empty.")
+        now = utc_now_iso()
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO user_facts (fact, category, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (clean_fact, category.strip().lower(), now, now),
+                )
+                return cursor.lastrowid
+
+    def list_facts(self, category: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """Retrieve user facts from long-term memory."""
+        with self._lock:
+            conn = self._get_connection()
+            if category:
+                rows = conn.execute(
+                    """
+                    SELECT id, fact, category, created_at, updated_at
+                    FROM user_facts
+                    WHERE category = ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (category.strip().lower(), limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, fact, category, created_at, updated_at
+                    FROM user_facts
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def delete_fact(self, fact_id: int) -> bool:
+        """Delete a user fact by ID."""
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                cursor = conn.execute("DELETE FROM user_facts WHERE id = ?", (fact_id,))
+                return cursor.rowcount > 0
+
+    def wipe_all_facts(self) -> int:
+        """Delete all stored user facts."""
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                cursor = conn.execute("DELETE FROM user_facts;")
+                return cursor.rowcount
+
+    def import_facts(self, facts: List[Dict[str, Any]]) -> int:
+        """Import facts into user_facts table."""
+        with self._lock:
+            conn = self._get_connection()
+            imported = 0
+            with conn:
+                for f in facts:
+                    fact_text = f.get("fact", "").strip()
+                    if not fact_text:
+                        continue
+                    cat = f.get("category", "general")
+                    created = f.get("created_at", utc_now_iso())
+                    updated = f.get("updated_at", utc_now_iso())
+                    conn.execute(
+                        """
+                        INSERT INTO user_facts (fact, category, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (fact_text, cat, created, updated),
+                    )
+                    imported += 1
+            return imported
 
     def add_message(
         self,

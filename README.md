@@ -88,7 +88,32 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
     - Moves inactive/older sessions and messages into dedicated cold-storage archives (e.g. `conversations_archive.db`) and vacuums the active database.
   - **Storage Telemetry & CLI Utilities**:
     - Real-time disk footprint reporting (`/storage`), on-demand maintenance (`/vacuum`), and session archival (`/archive [days]`).
+- **Long-Term Fact Store / Core User Memory (Separate from Personality)**:
+  - Persistent relational table (`user_facts`) storing enduring user facts, preferences, environments, and project constraints completely isolated from `personality.md`.
+  - Automatically injected into the effective system prompt across all sessions under `### Verified User Facts & Long-Term Memory`.
+  - Management commands: `/remember <fact> [category]`, `/forget <id>`, `/facts [category]`.
+  - Independent wiping: `/wipe memory` or `/wipe facts` to clear fact storage without affecting conversation logs or `personality.md`.
+- **Human-in-the-Loop Confirmation for Agent Tools (3-State Model)**:
+  - Upgraded binary on/off tool toggles into a granular 3-state permission model:
+    - **OFF**: Tool capability completely disabled and omitted from model tool declarations.
+    - **ASK**: Interactive Human-in-the-Loop confirmation prompt (`[y/N]`) before executing shell commands, code, or file changes.
+    - **AUTO**: Complete AI control over tools without a human in the loop.
+  - **Prominent Safety Warning**: Displays a prominent warning panel whenever `AUTO` mode is activated or inspected in `/tools`.
+  - Controlled via `/tools <category> [off|ask|auto]` or cycling permissions with `/tools <category>`.
+- **Markdown Transcript & Rich HTML Exporters**:
+  - Standalone exports for any conversation session:
+    - **Markdown Transcript (`/export md [path]`)**: Clean GitHub-flavored Markdown document with session metadata badges, system prompt fences, and dialogue turns.
+    - **HTML Transcript (`/export html [path]`)**: Self-contained, responsive dark-themed HTML page with syntax highlighting, metadata badges, collapsible `<details>` blocks for thinking traces and autonomous tool executions.
+    - **Full Backup Archive (`/export bundle [path]`)**: Bundles database, JSON conversation logs, user facts, and `personality.md` into a single portable zip archive.
 - **Interactive Slash Commands**:
+  - `/remember <fact>` - Store verified user fact/preference in long-term memory
+  - `/forget <id>` - Remove a specific fact from long-term memory
+  - `/facts [category]` - List all stored long-term memory facts and preferences
+  - `/tools [cat] [off|ask|auto]` - Inspect or set 3-state tool permissions (OFF, ASK, AUTO)
+  - `/export <md|html|bundle> [path]` - Export session as Markdown, HTML, or full zip backup
+  - `/import <filepath> [mode]` - Restore conversation data, facts, and `personality.md` from backup archive
+  - `/wipe <conversation|persona|memory>` - Wipe conversation history, reset `personality.md`, or clear facts
+  - `/persona [reload|edit|adapt|wipe]` - View, reload, adapt, or reset `personality.md`
   - `/summarize` - Generate 2-sentence summary and title for current session
   - `/sessions [limit]` - List past archived sessions with message counts and summary snippets
   - `/session` - Display details and metadata of active session
@@ -100,14 +125,9 @@ A high-performance, low-latency AI Assistant interface designed for local Ollama
   - `/vacuum` or `/maintenance` - Reclaim disk space (WAL checkpoint + optimize + VACUUM)
   - `/archive [days]` - Move sessions older than N days to an archive database
   - `/compress [on|off|stats]` - Toggle or inspect Headroom context compression
-  - `/persona [reload|edit|adapt|wipe]` - View, reload, adapt, or reset `personality.md`
-  - `/wipe <conversation|persona>` - Wipe conversation history (`current` or `all`) or reset `personality.md` separately
-  - `/export [filepath]` - Bundle conversation data and `personality.md` into backup (.zip)
-  - `/import <filepath> [mode]` - Restore conversation data and `personality.md` from backup archive
   - `/models` - List available models with sizes and parameter counts
   - `/use <model>` - Switch active model dynamically
   - `/mode [chat|agent]` - Inspect or toggle between Chat and Agent modes
-  - `/tools [cat] [on|off]` - View or toggle agent tool access (terminal, python, web, files)
   - `/buffer` - View active context window and character/token breakdown
   - `/clear` - Reset in-memory conversation history while preserving system prompt
   - `/system [prompt]` - View or modify pinned system prompt directly

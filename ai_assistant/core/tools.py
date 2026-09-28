@@ -59,6 +59,51 @@ LOAD_SESSION_TRANSCRIPT_TOOL: Dict[str, Any] = {
     },
 }
 
+SAVE_USER_FACT_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "save_user_fact",
+        "description": (
+            "Save an enduring fact, preference, or piece of knowledge about the user into persistent long-term memory. "
+            "Call this when the user shares personal preferences, project specifics, habits, or environment facts "
+            "that should be remembered across future sessions (e.g. 'I work in Ubuntu', 'My favorite language is Rust')."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fact": {
+                    "type": "string",
+                    "description": "The concise fact to store in memory.",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Optional category (e.g. 'tech_stack', 'preference', 'project', 'general').",
+                },
+            },
+            "required": ["fact"],
+        },
+    },
+}
+
+LIST_USER_FACTS_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "list_user_facts",
+        "description": (
+            "Retrieve verified facts and preferences about the user stored in persistent long-term memory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Optional category filter.",
+                },
+            },
+        },
+    },
+}
+
 # --- Action Tool Schemas for Agent Mode (Phase 7) ---
 
 RUN_TERMINAL_COMMAND_TOOL: Dict[str, Any] = {
@@ -249,7 +294,10 @@ TOOL_CATEGORIES: Dict[str, List[Dict[str, Any]]] = {
     "python": [PYTHON_INTERPRETER_TOOL],
     "web": [WEB_SEARCH_TOOL, FETCH_WEB_PAGE_TOOL],
     "files": [READ_FILE_TOOL, WRITE_FILE_TOOL, LIST_DIRECTORY_TOOL],
-    "memory": [SEARCH_PAST_CONVERSATIONS_TOOL, LOAD_SESSION_TRANSCRIPT_TOOL],
+    "memory": [
+        SEARCH_PAST_CONVERSATIONS_TOOL,
+        LOAD_SESSION_TRANSCRIPT_TOOL,
+    ],
 }
 
 TOOL_NAME_TO_CATEGORY: Dict[str, str] = {
@@ -262,11 +310,18 @@ TOOL_NAME_TO_CATEGORY: Dict[str, str] = {
     "list_directory": "files",
     "search_past_conversations": "memory",
     "load_session_transcript": "memory",
+    "save_user_fact": "memory",
+    "list_user_facts": "memory",
 }
 
 CHAT_TOOLS: List[Dict[str, Any]] = [
     SEARCH_PAST_CONVERSATIONS_TOOL,
     LOAD_SESSION_TRANSCRIPT_TOOL,
+]
+
+MEMORY_FACT_TOOLS: List[Dict[str, Any]] = [
+    SAVE_USER_FACT_TOOL,
+    LIST_USER_FACTS_TOOL,
 ]
 
 AGENT_ACTION_TOOLS: List[Dict[str, Any]] = [
@@ -287,7 +342,7 @@ AGENT_TOOLS: List[Dict[str, Any]] = (
 )
 
 ALL_AGENT_TOOLS: List[Dict[str, Any]] = (
-    CHAT_TOOLS + AGENT_ACTION_TOOLS + WEB_TOOLS
+    CHAT_TOOLS + AGENT_ACTION_TOOLS + WEB_TOOLS + MEMORY_FACT_TOOLS
 )
 
 
@@ -296,6 +351,7 @@ class ToolDispatcher:
 
     def __init__(self, assistant: "AIAssistant"):
         self.assistant = assistant
+        self.confirmation_callback = None
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any] | str) -> str:
         """Execute a tool call and return formatted context string."""
@@ -310,19 +366,38 @@ class ToolDispatcher:
                     "file_path": arguments,
                     "directory_path": arguments,
                     "url": arguments,
+                    "fact": arguments,
                 }
         else:
             args = arguments or {}
 
-        # 0. Check category permission policy
+        # 0. Check category permission policy and human-in-the-loop confirmation
         cat = TOOL_NAME_TO_CATEGORY.get(tool_name)
-        if cat and cat != "memory" and hasattr(self.assistant, "is_tool_category_enabled"):
-            if not self.assistant.is_tool_category_enabled(cat):
+        if cat and cat != "memory":
+            if hasattr(self.assistant, "is_tool_category_enabled") and not self.assistant.is_tool_category_enabled(cat):
                 return (
                     f"Error: Access to tool '{tool_name}' is disabled. "
                     f"The '{cat}' tool capability is currently turned off by permission policy. "
-                    f"Use /tools {cat} on to allow access."
+                    f"Use /tools {cat} [ask|auto] to allow access."
                 )
+
+            # Check for Human-in-the-Loop confirmation mode
+            if hasattr(self.assistant, "get_tool_permission_mode"):
+                mode = self.assistant.get_tool_permission_mode(cat)
+                if mode == "ask":
+                    cb = getattr(self.assistant, "tool_confirmation_callback", None) or self.confirmation_callback
+                    if cb:
+                        import inspect
+                        if inspect.iscoroutinefunction(cb):
+                            confirmed = await cb(tool_name, args)
+                        else:
+                            res = cb(tool_name, args)
+                            if inspect.isawaitable(res):
+                                confirmed = await res
+                            else:
+                                confirmed = res
+                        if not confirmed:
+                            return f"Execution cancelled: User denied permission to execute tool '{tool_name}'."
 
         # 1. Past Conversation Search
         if tool_name == "search_past_conversations":
@@ -364,6 +439,29 @@ class ToolDispatcher:
                 return f"Session '{session_id}' not found in database."
 
             return transcript.formatted_transcript
+
+        # 3. Long-Term Fact Store Tools
+        elif tool_name == "save_user_fact":
+            fact_text = str(args.get("fact", "")).strip()
+            category = str(args.get("category", "general")).strip()
+            if not fact_text:
+                return "Error: Fact content cannot be empty."
+            if hasattr(self.assistant, "add_user_fact"):
+                fact_id = self.assistant.add_user_fact(fact=fact_text, category=category)
+                return f"Fact successfully stored in long-term memory (ID: {fact_id}, Category: {category})."
+            return "Error: Fact store not available on assistant."
+
+        elif tool_name == "list_user_facts":
+            cat_filter = args.get("category")
+            if hasattr(self.assistant, "list_user_facts"):
+                facts = self.assistant.list_user_facts(category=cat_filter)
+                if not facts:
+                    return "No long-term user facts found."
+                lines = [f"Found {len(facts)} user facts:"]
+                for f in facts:
+                    lines.append(f"- [ID {f['id']}] ({f['category']}): {f['fact']}")
+                return "\n".join(lines)
+            return "Error: Fact store not available on assistant."
 
         # 3. Terminal Command Execution
         elif tool_name == "run_terminal_command":

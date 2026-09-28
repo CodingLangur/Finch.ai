@@ -402,6 +402,14 @@ class AIAssistant:
                 "messages_wiped": wiped_count,
             }
 
+    def wipe_current_conversation(self) -> Dict[str, Any]:
+        """Wipe messages from the current active session in SQLite and clear memory buffer."""
+        return self.wipe_conversation(all_sessions=False)
+
+    def wipe_all_conversations(self) -> Dict[str, Any]:
+        """Wipe all sessions and messages across the entire SQLite database and start a fresh session."""
+        return self.wipe_conversation(all_sessions=True)
+
     def export_backup(self, output_path: Optional[str] = None) -> str:
         """Export conversation data and personality.md into a zip backup bundle."""
         backup_dir = getattr(self.config, "backup_dir", "backups")

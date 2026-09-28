@@ -118,11 +118,11 @@ class InteractiveCLI:
         table.add_row("/facts, /memory", "List all persistent facts stored in long-term memory")
         table.add_row("/compress [on|off|stats]", "Toggle or inspect Headroom context compression")
         table.add_row("/persona [reload|edit|adapt|wipe]", "View, reload, adapt, or reset personality.md")
-        table.add_row("/wipe <conversation|persona|memory>", "Wipe conversation history, persona, or memory facts separately")
+        table.add_row("/wipe [current|all|persona|memory]", "Wipe conversation history (active or all), persona, or memory facts")
         table.add_row("/export [backup|md|html] [path]", "Export backup bundle (.zip), Markdown transcript, or HTML")
         table.add_row("/import <filepath> [mode]", "Restore conversation data and personality.md from backup")
         table.add_row("/buffer", "Inspect current sliding-window message buffer")
-        table.add_row("/clear", "Clear message history (retains system prompt)")
+        table.add_row("/clear [all|history]", "Clear in-memory buffer, or wipe SQLite conversation history")
         table.add_row("/vacuum, /maintenance", "Run SQLite housekeeping (checkpoint, optimize, VACUUM)")
         table.add_row("/storage", "Inspect database disk footprint, page count, and WAL size")
         table.add_row("/archive [days]", "Archive inactive sessions older than N days to archive DB")
@@ -222,9 +222,45 @@ class InteractiveCLI:
             self.console.print(f"[bold yellow]Persona adaptation notice:[/bold yellow] {msg}\n")
 
     def handle_wipe_command(self, arg: str) -> None:
-        """Wipe conversation history or personality.md separately."""
-        parts = arg.strip().split()
-        target = parts[0].lower() if parts else ""
+        """Wipe conversation history, personality.md, or long-term memory facts."""
+        raw_parts = arg.strip().split()
+        if not raw_parts:
+            self.console.print(
+                "[bold yellow]⚠️  Wipe Options:[/bold yellow]\n"
+                "  [1] [cyan]Current conversation[/cyan] - Wipe active session messages from DB & memory\n"
+                "  [2] [red]All conversations[/red]    - Wipe ALL conversation sessions & messages from DB\n"
+                "  [3] [magenta]Personality[/magenta]          - Reset personality.md to default template (backed up to .bak)\n"
+                "  [4] [blue]Memory facts[/blue]         - Clear all stored user facts & preferences\n"
+                "  [5] Cancel\n"
+            )
+            try:
+                choice = input("Select an option [1-5]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[dim]Wipe cancelled.[/dim]\n")
+                return
+            if choice == "1":
+                parts = ["conversation", "current"]
+            elif choice == "2":
+                parts = ["conversation", "all"]
+            elif choice == "3":
+                parts = ["persona"]
+            elif choice == "4":
+                parts = ["memory"]
+            else:
+                self.console.print("[dim]Wipe cancelled.[/dim]\n")
+                return
+        else:
+            parts = raw_parts
+
+        target = parts[0].lower()
+
+        # Handle direct shorthand: /wipe all, /wipe current, /wipe session
+        if target in ("all", "everything", "full"):
+            target = "conversation"
+            parts = ["conversation", "all"]
+        elif target in ("current", "active", "session"):
+            target = "conversation"
+            parts = ["conversation", "current"]
 
         if target in ("persona", "personality"):
             content = self.assistant.wipe_persona()
@@ -232,7 +268,7 @@ class InteractiveCLI:
                 f"[bold green]✓ Successfully wiped {self.assistant.config.personality_path}![/bold green]\n"
                 f"[dim]Reset to default template. Previous version saved to {self.assistant.config.personality_path}.bak[/dim]\n"
             )
-        elif target in ("conversation", "conv", "history"):
+        elif target in ("conversation", "conversations", "conv", "history", "chat", "messages", "dialogue"):
             scope = parts[1].lower() if len(parts) > 1 else "current"
             all_sessions = scope in ("all", "full", "everything")
             stats = self.assistant.wipe_conversation(all_sessions=all_sessions)
@@ -257,8 +293,11 @@ class InteractiveCLI:
             )
         else:
             self.console.print(
-                "[yellow]Usage: /wipe <target>[/yellow]\n"
-                "  [bold cyan]/wipe conversation [current|all][/bold cyan] - Wipe conversation history\n"
+                "[yellow]Usage: /wipe [target][/yellow]\n"
+                "  [bold cyan]/wipe[/bold cyan]                         - Open interactive wipe menu\n"
+                "  [bold cyan]/wipe conversation [current|all][/bold cyan] - Wipe active session or all conversation history\n"
+                "  [bold cyan]/wipe current[/bold cyan]                 - Wipe active conversation messages\n"
+                "  [bold cyan]/wipe all[/bold cyan]                     - Wipe ALL conversation sessions & messages from DB\n"
                 "  [bold cyan]/wipe persona[/bold cyan]                 - Reset personality.md to default template (backs up to .bak)\n"
                 "  [bold cyan]/wipe memory[/bold cyan]                  - Clear all stored user facts and preferences\n"
             )
@@ -1051,8 +1090,27 @@ class InteractiveCLI:
                 return True
 
             elif command == "/clear":
-                self.assistant.clear_history()
-                self.console.print("[bold green]Conversation history cleared (system prompt preserved).[/bold green]\n")
+                sub = arg.strip().lower()
+                if sub in ("all", "db", "database", "everything"):
+                    stats = self.assistant.wipe_conversation(all_sessions=True)
+                    self.console.print(
+                        f"[bold green]✓ Successfully wiped ALL conversation history from SQLite![/bold green]\n"
+                        f"Cleared [bold white]{stats.get('sessions_wiped', 0)}[/bold white] sessions and "
+                        f"[bold white]{stats.get('messages_wiped', 0)}[/bold white] messages.\n"
+                        f"Started fresh session: [cyan]{self.assistant.current_session.id}[/cyan]\n"
+                    )
+                elif sub in ("history", "conversation", "conv", "session", "messages", "current"):
+                    stats = self.assistant.wipe_conversation(all_sessions=False)
+                    self.console.print(
+                        f"[bold green]✓ Successfully wiped conversation messages for active session![/bold green]\n"
+                        f"Removed [bold white]{stats.get('messages_wiped', 0)}[/bold white] message(s). In-memory buffer cleared.\n"
+                    )
+                else:
+                    self.assistant.clear_history()
+                    self.console.print(
+                        "[bold green]Conversation history cleared (system prompt preserved).[/bold green]\n"
+                        "[dim]Tip: To also wipe messages from the database, use [bold cyan]/wipe conversation[/bold cyan] or [bold cyan]/clear all[/bold cyan].[/dim]\n"
+                    )
                 return True
 
             elif command in ("/vacuum", "/maintenance"):

@@ -1,4 +1,4 @@
-"""Unit tests for Persona wiping/adaptation and Conversation backup export/import."""
+import io
 import os
 import shutil
 import tempfile
@@ -6,12 +6,15 @@ import unittest
 import zipfile
 from unittest.mock import AsyncMock, MagicMock
 
+from rich.console import Console
+
 from ai_assistant.config import AppConfig
 from ai_assistant.core.assistant import AIAssistant
 from ai_assistant.persona.manager import DEFAULT_PERSONA_TEMPLATE, PersonaManager
 from ai_assistant.providers.base import BaseLLMProvider, ModelInfo, StreamChunk
 from ai_assistant.storage.backup import export_backup_bundle, import_backup_bundle
 from ai_assistant.storage.sqlite_archive import SQLiteArchive
+from ai_assistant.ui.cli import InteractiveCLI
 
 
 class MockLLMProvider(BaseLLMProvider):
@@ -268,6 +271,90 @@ class TestAIAssistantWipeExportImport(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(success)
         self.assertIn("Adaptive Antigravity", self.assistant.persona_manager.load_persona())
         self.assertIn("Python and prefers minimal syntax explanations", self.assistant.persona_manager.load_persona())
+
+    async def test_assistant_wipe_helpers(self):
+        """Verify wipe_current_conversation and wipe_all_conversations helper methods."""
+        # 1. Wipe current session (contains system message + user message)
+        self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Msg in curr")
+        self.assistant.memory.add_user_message("Msg in buffer")
+        res1 = self.assistant.wipe_current_conversation()
+        self.assertFalse(res1["all_sessions"])
+        self.assertGreaterEqual(res1["messages_wiped"], 1)
+        self.assertEqual(len(self.assistant.memory._messages), 0)
+
+        # 2. Wipe all conversations
+        s2 = self.assistant.archive.create_session(title="Second")
+        self.assistant.archive.add_message(s2.id, "user", "Msg in s2")
+        res2 = self.assistant.wipe_all_conversations()
+        self.assertTrue(res2["all_sessions"])
+        self.assertGreaterEqual(res2["sessions_wiped"], 2)
+        self.assertEqual(len(self.assistant.archive.list_sessions()), 1)  # Only the newly created fresh session
+
+
+class TestCLIWipeAndClearCommands(unittest.IsolatedAsyncioTestCase):
+    """Test CLI /wipe and /clear command processing."""
+
+    async def asyncSetUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.test_dir, "conversations.db")
+        self.personality_file = os.path.join(self.test_dir, "personality.md")
+
+        self.config = AppConfig(
+            db_path=self.db_path,
+            personality_path=self.personality_file,
+            compression_enabled=False,
+        )
+        self.provider = MockLLMProvider()
+        self.archive = SQLiteArchive(db_path=self.db_path)
+        self.assistant = AIAssistant(
+            config=self.config,
+            provider=self.provider,
+            archive=self.archive,
+        )
+        self.cli = InteractiveCLI(self.assistant)
+        self.string_io = io.StringIO()
+        self.cli.console = Console(file=self.string_io, color_system=None)
+
+    async def asyncTearDown(self):
+        self.assistant.close()
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_cli_wipe_current_shorthand(self):
+        self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Testing wipe current")
+        self.cli.handle_wipe_command("current")
+        output = self.string_io.getvalue()
+        self.assertIn("Successfully wiped conversation messages for active session", output)
+        self.assertEqual(len(self.assistant.archive.get_messages(self.assistant.current_session.id)), 0)
+
+    def test_cli_wipe_all_shorthand(self):
+        self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Msg 1")
+        s2 = self.assistant.archive.create_session(title="S2")
+        self.assistant.archive.add_message(s2.id, "user", "Msg 2")
+
+        self.cli.handle_wipe_command("all")
+        output = self.string_io.getvalue()
+        self.assertIn("Successfully wiped ALL conversation history", output)
+        self.assertEqual(len(self.assistant.archive.list_sessions()), 1)
+
+    def test_cli_wipe_conversation_synonyms(self):
+        self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Msg")
+        self.cli.handle_wipe_command("conversations current")
+        self.assertIn("Successfully wiped conversation messages", self.string_io.getvalue())
+
+    async def test_cli_clear_command_variants(self):
+        # 1. /clear default (clears in-memory buffer)
+        self.assistant.memory.add_user_message("Buffer message")
+        self.assertEqual(len(self.assistant.memory._messages), 1)
+        await self.cli.handle_input("/clear")
+        self.assertEqual(len(self.assistant.memory._messages), 0)
+        self.assertIn("Conversation history cleared", self.string_io.getvalue())
+
+        # 2. /clear all (wipes all conversations in SQLite)
+        self.string_io.truncate(0)
+        self.string_io.seek(0)
+        self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Msg to wipe")
+        await self.cli.handle_input("/clear all")
+        self.assertIn("Successfully wiped ALL conversation history from SQLite", self.string_io.getvalue())
 
 
 if __name__ == "__main__":

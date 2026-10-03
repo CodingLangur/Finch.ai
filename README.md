@@ -1,182 +1,98 @@
 <div align="center">
 
-# Finch.ai (Chatbot & Agent Foundation)
+# Finch.ai
 
-<img src="assets/finch_mascot.jpg" alt="Finch.ai Mascot" width="320" style="border-radius: 12px;" />
+<img src="assets/finch_mascot.jpg" alt="Finch.ai Mascot" width="260" style="border-radius: 12px;" />
 
 <p>
-A high-performance, low-latency AI Assistant interface designed for local Ollama, Google Gemini, and any OpenAI-compatible runtimes with <b>Headroom Context Compression</b>, dynamic persona management, SQLite conversation persistence, and modular agent architecture.
+A high-performance, low-latency AI assistant and autonomous agent supporting local Ollama, Google Gemini, and OpenAI-compatible runtimes.
 </p>
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://python.org)
+[![Documentation](https://img.shields.io/badge/Docs-LaTeX%2FPDF-orange.svg)](docs/main.pdf)
 
 </div>
 
-## Features
+---
 
-- **Local Ollama Integration**: Fully compatible with any Ollama model (`llama3.2`, `mistral`, `qwen2.5`, or custom modelfile builds) with `httpx` async streaming for minimal latency.
-- **Headroom Context Compression Pipeline**:
-  - Intercepts and compresses tool outputs, JSON structures, logs, AST code, and conversational history before sending prompts to the LLM.
-  - Reduces token consumption by **15% to 60%+** while preserving critical details and semantic integrity.
-  - **Persona Protection**: Pinned `personality.md` system instructions remain completely untouched and byte-exact (`compress_system_messages=False`).
-  - **Recent Turn Protection**: The latest active conversational turn is preserved with full fidelity (`protect_recent=2`).
-  - **Live Compression Telemetry**: Displays token counts before/after, tokens saved, percentage reduction, and applied transforms.
-- **Dynamic Persona Management (`personality.md`)**:
-  - **File-First Injection**: Loads identity, style, and rules from `personality.md` on startup as the pinned system prompt.
-  - **Adaptive Evolution Over Uses**: Synthesizes recent conversation summaries and user interactions into learned preferences (`/persona adapt` or automatic post-session adaptation).
-  - **Model-Driven Updates**: When asked to adapt its persona, the model emits `<personality_update>...</personality_update>` tags.
-  - **Automatic Persistence & Backup**: Captures and validates updates, backs up previous version to `personality.md.bak`, and live-updates in-memory context without restarting.
-  - **Independent Wiping**: Safely wipe conversation history (`/wipe conversation [current|all]`) and reset `personality.md` (`/wipe persona`) separately.
-  - **Backup Export & Import**: Bundle conversations (`conversations.db`, `conversations.json`, `manifest.json`) and `personality.md` into a single portable zip archive (`/export`), and restore seamlessly (`/import`).
-- **Model Discovery & Switching**: Query installed Ollama models (`/models`) and switch on-the-fly (`/use <model>`).
-- **Sliding-Window Message Buffer**: In-memory context retention (default: 8 messages / 4 turns) with pinned system prompt preservation.
-- **Real-Time Telemetry & Profiling**: Live token streaming with exact per-turn stats:
-  - **Generation Speed (tokens/second)**
-  - **Time to First Token (TTFT)**
-  - **Token Counts (Prompt & Eval)**
-  - **Process Memory (RAM / RSS in MB)**
-  - **Buffer Utilization (active vs max)**
-  - **Headroom Savings (tokens before/after, % saved)**
-- **Multi-Provider Support (Ollama, Google Gemini & OpenAI-Compatible APIs)**:
-  - Supports local Ollama models, Google Gemini API (`gemini-2.5-flash`, `gemini-2.5-pro`), and any **OpenAI-compatible endpoint** (vLLM, LM Studio, Groq, Together AI, OpenRouter, DeepSeek, LocalAI, etc.).
-  - Configurable via `.env` (`DEFAULT_PROVIDER=ollama|gemini|openai`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `GEMINI_API_KEY`).
-  - Native SSE streaming with real-time TTFT and tokens/sec telemetry.
-- **SQLite Conversation Archive & Session Logging (Phase 3)**:
-  - Persistent relational storage on disk (`conversations.db`) using WAL mode and enforced foreign keys.
-  - Relational schema with `sessions` and `messages` tables.
-  - Automatically logs every user and assistant turn with timestamps, token counts, reasoning/thinking traces, and compression metadata.
-  - **Fast Session Summarization**: Runs a fast background prompt on exit or via `/summarize` to generate a 2-sentence summary and concise title, saved directly into the database.
-- **Fast Lexical Search with FTS5 & Transcript Fetching (Phase 4)**:
-  - SQLite `messages_fts` virtual table synced in real-time via `AFTER INSERT`, `AFTER DELETE`, and `AFTER UPDATE` triggers.
-  - Sub-millisecond exact-term matching for code snippets (e.g. `def calculate_fibonacci(n):`), dates (`2026-09-24`), technical keywords, and filenames (`config.py`).
-  - Automatic query sanitization, BM25 relevance ranking, and contextual match snippet extraction.
-  - Structured transcript retrieval (`load_session_transcript`) restoring full conversational dialogue turns once a session is identified.
-- **Semantic & Hybrid Search with sqlite-vec + Reciprocal Rank Fusion (Phase 5)**:
-  - **Local Embedder**: Generates 768-dimensional vector representations of session summaries upon completion using local Ollama (`nomic-embed-text`).
-  - **`sqlite-vec` Vector Storage**: Summary vectors are indexed in the `sessions_vec` virtual table (`vec0`) using cosine distance.
-  - **Reciprocal Rank Fusion (RRF)**: Combines FTS5 lexical signals and `sqlite-vec` cosine similarity into the unified `search_hybrid` engine ($k=60$).
-  - **Benchmark Suite**: Compare retrieval accuracy for vague thematic queries vs. specific keywords (`python -m benchmarks.benchmark_search`).
-- **Function Calling in Chat Mode & Autonomous Retrieval (Phase 6)**:
-  - **Tool Schemas**: Exposes `search_past_conversations` (hybrid semantic + lexical search) and `load_session_transcript` (dialogue turn fetching) via Ollama's tool-calling API.
-  - **Single-Hop Tool Execution**: Enforces a strict single retrieval cycle per turn:
-    $$\text{User Query} \longrightarrow \text{LLM Tool Call} \longrightarrow \text{DB Fetch} \longrightarrow \text{Final Answer}$$
-    Pass 2 is invoked with `tools=None`, strictly preventing multi-hop looping and preserving conversational responsiveness.
-  - **Live UI Feedback**: Streams real-time notices (`⚡ Accessing conversation archive via ...`) to the terminal when tools are executed.
-  - **Adherence Verified**: Model strictly adheres to reaching into history only when relevant to the user query, answering general queries directly without calling search.
-- **Chat vs. Agent Mode Toggle & Multi-Turn Loop (Phase 7)**:
-  - **Mode State Machine**: Runtime flag (`mode = "chat"` vs. `mode = "agent"`), controllable via `/mode [chat|agent]` or `--mode <chat|agent>`.
-  - **Chat Mode (Safety & Low Latency)**: Tools are restricted strictly to conversation memory retrieval (`search_past_conversations`, `load_session_transcript`) with single-hop enforcement to preserve minimal latency and prevent looping.
-  - **Agent Mode Action Capabilities & Granular Tool Toggles**:
-    - `run_terminal_command` - Local shell command execution with directory support, timeout, and output capture
-    - `python_interpreter` - Standalone Python REPL subshell for calculations and data processing
-    - `web_search` & `fetch_web_page` - Live web querying and page content extraction
-    - `read_file`, `write_file`, `list_directory` - Local filesystem access
-    - **Independent Category Toggles**: Each tool capability (`terminal`, `python`, `web`, `files`) has its own independent toggle in `AppConfig` and runtime toggle via `/tools <category> [on|off]`.
-    - **Guardrail Enforcement**: When a tool category is disabled, its schema is omitted from the LLM prompt and runtime execution is rejected at the dispatcher level.
-  - **Sequential Multi-Turn Execution Loop**: In agent mode, an autonomous `while` loop executes sequential tool calls across multiple turns until the task is complete, reporting live step progress (`⚡ Agent Step N: Executing ...`) and logging full multi-turn metadata to SQLite.
-  - **Multi-Provider Tool Calling**: Full tool-calling and multi-turn execution support across both local Ollama and Google Gemini (`gemini-2.5-flash`).
-- **Optimization, Housekeeping & Maintenance (Phase 8)**:
-  - **SQLite Housekeeping Routines**:
-    - `VACUUM`: Defragments SQLite B-trees and reclaims unallocated freelist pages directly to disk.
-    - `PRAGMA optimize`: Collects query planner statistics and updates SQLite indexes.
-    - `PRAGMA wal_checkpoint(TRUNCATE)`: Flushes all committed WAL transactions into the main `.db` file and truncates the WAL log.
-    - `PRAGMA integrity_check`: Validates SQLite database file integrity and detects page corruption.
-    - Automatic connection-close housekeeping to prevent WAL bloat.
-  - **Column-Level Zstandard (zstd) Compression**:
-    - High-performance transparent column-level compression (`zstd` level 3 with zlib fallback) for message bodies.
-    - Sub-0.1ms decompression latency and **~85-92%** space savings on code, logs, and structured tool outputs.
-    - Synchronized FTS5 indexing: maintains full lexical searchability across compressed records.
-  - **Database-Level Archival**:
-    - Moves inactive/older sessions and messages into dedicated cold-storage archives (e.g. `conversations_archive.db`) and vacuums the active database.
-  - **Storage Telemetry & CLI Utilities**:
-    - Real-time disk footprint reporting (`/storage`), on-demand maintenance (`/vacuum`), and session archival (`/archive [days]`).
-- **Long-Term Fact Store / Core User Memory (Separate from Personality)**:
-  - Persistent relational table (`user_facts`) storing enduring user facts, preferences, environments, and project constraints completely isolated from `personality.md`.
-  - Automatically injected into the effective system prompt across all sessions under `### Verified User Facts & Long-Term Memory`.
-  - Management commands: `/remember <fact> [category]`, `/forget <id>`, `/facts [category]`.
-  - Independent wiping: `/wipe memory` or `/wipe facts` to clear fact storage without affecting conversation logs or `personality.md`.
-- **Human-in-the-Loop Confirmation for Agent Tools (3-State Model)**:
-  - Upgraded binary on/off tool toggles into a granular 3-state permission model:
-    - **OFF**: Tool capability completely disabled and omitted from model tool declarations.
-    - **ASK**: Interactive Human-in-the-Loop confirmation prompt (`[y/N]`) before executing shell commands, code, or file changes.
-    - **AUTO**: Complete AI control over tools without a human in the loop.
-  - **Prominent Safety Warning**: Displays a prominent warning panel whenever `AUTO` mode is activated or inspected in `/tools`.
-  - Controlled via `/tools <category> [off|ask|auto]` or cycling permissions with `/tools <category>`.
-- **Markdown Transcript & Rich HTML Exporters**:
-  - Standalone exports for any conversation session:
-    - **Markdown Transcript (`/export md [path]`)**: Clean GitHub-flavored Markdown document with session metadata badges, system prompt fences, and dialogue turns.
-    - **HTML Transcript (`/export html [path]`)**: Self-contained, responsive dark-themed HTML page with syntax highlighting, metadata badges, collapsible `<details>` blocks for thinking traces and autonomous tool executions.
-    - **Full Backup Archive (`/export bundle [path]`)**: Bundles database, JSON conversation logs, user facts, and `personality.md` into a single portable zip archive.
-- **Interactive Slash Commands**:
-  - `/remember <fact>` - Store verified user fact/preference in long-term memory
-  - `/forget <id>` - Remove a specific fact from long-term memory
-  - `/facts [category]` - List all stored long-term memory facts and preferences
-  - `/tools [cat] [off|ask|auto]` - Inspect or set 3-state tool permissions (OFF, ASK, AUTO)
-  - `/export <md|html|bundle> [path]` - Export session as Markdown, HTML, or full zip backup
-  - `/import <filepath> [mode]` - Restore conversation data, facts, and `personality.md` from backup archive
-  - `/wipe <conversation|persona|memory>` - Wipe conversation history, reset `personality.md`, or clear facts
-  - `/persona [reload|edit|adapt|wipe]` - View, reload, adapt, or reset `personality.md`
-  - `/summarize` - Generate 2-sentence summary and title for current session
-  - `/sessions [limit]` - List past archived sessions with message counts and summary snippets
-  - `/session` - Display details and metadata of active session
-  - `/search <query>` - Exact-term & keyword search across past messages (FTS5)
-  - `/hybrid <query>` - Semantic & Hybrid Search combining FTS5 and sqlite-vec (RRF)
-  - `/transcript [id]` - View full dialogue transcript for an identified session
-  - `/new [title]` - Start a fresh session with clean context
-  - `/storage` or `/db` - Display disk footprint, page counts, WAL size, and freelist metrics
-  - `/vacuum` or `/maintenance` - Reclaim disk space (WAL checkpoint + optimize + VACUUM)
-  - `/archive [days]` - Move sessions older than N days to an archive database
-  - `/compress [on|off|stats]` - Toggle or inspect Headroom context compression
-  - `/models` - List available models with sizes and parameter counts
-  - `/use <model>` - Switch active model dynamically
-  - `/mode [chat|agent]` - Inspect or toggle between Chat and Agent modes
-  - `/buffer` - View active context window and character/token breakdown
-  - `/clear` - Reset in-memory conversation history while preserving system prompt
-  - `/system [prompt]` - View or modify pinned system prompt directly
-  - `/help` - Show command reference
-  - `/exit` or `/quit` - Quit session (auto-summarizes & vector indexes unless empty)
+## Key Features
+
+- **Multi-Provider Support**: Seamlessly connect to local Ollama models (`llama3.2`, `mistral`, `qwen2.5`), Google Gemini (`gemini-2.5-flash`), or OpenAI-compatible endpoints (vLLM, LM Studio, Groq, OpenRouter).
+- **Headroom Context Compression**: Intelligently compresses tool outputs, logs, code, and history to save **15%–60%+ tokens** while preserving persona rules and recent turns.
+- **Dual Execution Modes**:
+  - **Chat Mode**: Fast conversational assistant with single-hop memory retrieval.
+  - **Agent Mode**: Autonomous multi-turn loop with tools for terminal execution, Python REPL, web search, and filesystem access.
+- **3-State Tool Guardrails**: Configure tool categories (`terminal`, `python`, `web`, `files`) to `OFF`, `ASK` (interactive human confirmation), or `AUTO`.
+- **Hybrid Long-Term Memory**: SQLite conversation store with full-text search (FTS5) and semantic vector search (`sqlite-vec` + Reciprocal Rank Fusion).
+- **Dynamic Persona & User Facts**: Identity and behavior adapt via `personality.md` alongside an isolated persistent fact store (`/remember`).
+- **Telemetry & Maintenance**: Real-time streaming metrics (tokens/sec, TTFT, RAM), transparent `zstd` message compression, and WAL maintenance routines.
+- **Rich Session Exports**: Export chats to self-contained styled HTML reports, GitHub-flavored Markdown, or full backup archives.
 
 ---
 
 ## Quick Start
 
-### 1. Activate Environment
+### 1. Installation
 ```bash
+# Clone repository and enter directory
+cd Ai_Assistant
+
+# Create and activate virtual environment
+python3 -m venv .venv
 source .venv/bin/activate
-# or install requirements:
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Launch Interactive Chat
+### 2. Configuration
+Copy `.env.example` to `.env` to configure your default provider and API keys:
 ```bash
-python main.py
+cp .env.example .env
 ```
+*(Ollama works locally out-of-the-box. Add keys to `.env` if using Gemini or OpenAI-compatible APIs.)*
 
-### 3. Optional Arguments
+### 3. Launch
 ```bash
-# Specify custom Ollama model or host:
-python main.py --model llama3.2:latest --host http://localhost:11434
+# Start interactive session (default Ollama model)
+python main.py
 
-# Use an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter, OpenAI):
+# Switch provider or model on launch
+python main.py --provider gemini --model gemini-2.5-flash
 python main.py --provider openai --model gpt-4o-mini
-# Or point to a local OpenAI-compatible inference server:
-python main.py --provider openai --base-url http://localhost:8000/v1 --model meta-llama/Llama-3.2-3B-Instruct
 
-# Change sliding window size:
-python main.py --window-size 10
+# Start directly in Agent Mode
+python main.py --mode agent
 
-# Disable context compression:
-python main.py --no-compression
-
-# Run a quick one-off query:
-python main.py -q "Explain context compression in 2 sentences."
+# Run a one-off query
+python main.py -q "Explain context compression in two sentences."
 ```
 
 ---
 
-## Technical Documentation
+## Interactive Slash Commands
 
-A detailed technical architecture manual and system specification is available in the [`docs/`](docs/) directory. Written in \LaTeX, it covers the complete subsystem architecture, memory models, mathematical formulations for Reciprocal Rank Fusion, benchmark evaluations, and developer extension workflows.
+Control Finch.ai inside an active session using slash commands:
 
-- **LaTeX Source & Modular Chapters**: [`docs/`](docs/)
+| Command | Description |
+| :--- | :--- |
+| `/mode [chat\|agent]` | Toggle between Chat mode and autonomous Agent mode |
+| `/tools [cat] [off\|ask\|auto]` | Inspect or update tool permissions (`terminal`, `python`, `web`, `files`) |
+| `/remember <fact>` / `/facts` | Store or inspect persistent user preferences and project facts |
+| `/search <query>` / `/hybrid <q>` | Search past conversations via keyword (FTS5) or semantic hybrid search |
+| `/persona [reload\|adapt\|edit]` | View, evolve, or reload dynamic persona from `personality.md` |
+| `/models` / `/use <model>` | List available models or switch the active model on the fly |
+| `/export <md\|html\|bundle>` | Export session as formatted Markdown, styled HTML, or a backup zip |
+| `/compress [on\|off\|stats]` | Toggle or inspect Headroom context compression statistics |
+| `/storage` / `/vacuum` | Check SQLite disk footprint or trigger database maintenance |
+| `/help` | Display the complete command reference list |
+
+---
+
+## Technical Documentation & Architecture Reference
+
+For detailed subsystem architecture, database schemas, mathematical formulations (Reciprocal Rank Fusion, token compression economics), benchmarks, and developer guides, refer to the technical reference manual in [`docs/`](docs/):
+
 - **Compiled PDF Manual**: [`docs/main.pdf`](docs/main.pdf)
-- **Compilation Guide**: See [`docs/README.md`](docs/README.md) (`make` or `./build.sh`)
-
+- **Modular Chapters**: [`docs/sections/`](docs/sections/)
+- **Build Instructions**: See [`docs/README.md`](docs/README.md) (`make` or `./build.sh`)

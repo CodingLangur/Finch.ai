@@ -154,7 +154,12 @@ class InteractiveCLI:
         banner.add_row("Storage:", f"[white]{self.assistant.config.db_path}[/white] (SQLite)")
         banner.add_row("Provider:", provider_desc)
         banner.add_row("Active Model:", f"[bold green]{self.assistant.active_model}[/bold green]")
-        banner.add_row("Mode:", f"[magenta]{self.assistant.mode.value.upper()}[/magenta]")
+        mode_label = (
+            f"[bold magenta]{self.assistant.mode.value.upper()}[/bold magenta] [dim](Conversational Dialogue)[/dim]"
+            if self.assistant.mode == AssistantMode.CHAT
+            else f"[bold magenta]{self.assistant.mode.value.upper()}[/bold magenta] [dim](Autonomous Tools)[/dim]"
+        )
+        banner.add_row("Mode:", mode_label)
         banner.add_row("Persona:", f"[yellow]{self.assistant.config.personality_path}[/yellow]")
         banner.add_row("Compression:", comp_status)
         banner.add_row("Sliding Window:", f"{self.assistant.memory.max_messages} messages (pinned system prompt)")
@@ -1111,12 +1116,14 @@ class InteractiveCLI:
                 if arg:
                     try:
                         new_mode = self.assistant.set_mode(arg)
-                        self.console.print(f"[bold green]Switched mode to:[/bold green] {new_mode.value.upper()}\n")
+                        desc = "conversational dialogue, single-hop memory" if new_mode == AssistantMode.CHAT else "autonomous multi-turn actions"
+                        self.console.print(f"[bold green]Switched mode to:[/bold green] {new_mode.value.upper()} [dim]({desc})[/dim]\n")
                     except ValueError:
                         self.console.print(f"[bold red]Invalid mode '{arg}'. Choose 'chat' or 'agent'.[/bold red]\n")
                 else:
                     toggled = self.assistant.toggle_mode()
-                    self.console.print(f"[bold magenta]Toggled mode to:[/bold magenta] {toggled.value.upper()}\n")
+                    desc = "conversational dialogue, single-hop memory" if toggled == AssistantMode.CHAT else "autonomous multi-turn actions"
+                    self.console.print(f"[bold magenta]Toggled mode to:[/bold magenta] {toggled.value.upper()} [dim]({desc})[/dim]\n")
                 return True
 
             elif command in ("/tools", "/tool", "/toggle"):

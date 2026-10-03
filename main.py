@@ -3,9 +3,9 @@ import argparse
 import asyncio
 import sys
 
-from ai_assistant.config import AppConfig
-from ai_assistant.core.assistant import AIAssistant, AssistantMode
-from ai_assistant.ui.cli import InteractiveCLI
+from finch.config import AppConfig
+from finch.core.assistant import AIAssistant, AssistantMode
+from finch.ui.cli import InteractiveCLI
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         type=str,
         choices=["chat", "chatbot", "agent"],
-        default=None,
+        default="chat",
         help="Initial mode (default: chat)",
     )
     parser.add_argument(
@@ -108,8 +108,7 @@ async def main_async() -> None:
         config.default_model = args.model
     if args.window_size:
         config.window_size = args.window_size
-    if args.mode:
-        config.default_mode = args.mode
+    config.default_mode = args.mode or "chat"
     if args.no_compression:
         config.compression_enabled = False
     if args.db:

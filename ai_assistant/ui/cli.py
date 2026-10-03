@@ -1,9 +1,14 @@
 """Interactive Rich CLI for streaming chat, telemetry, and buffer monitoring."""
 import asyncio
+import json
 import os
 import sys
-from typing import Optional
+from typing import Any, Dict, List, Optional
 import psutil
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory, InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings
 from rich.box import ROUNDED
 from rich.console import Console
 from rich.live import Live
@@ -23,13 +28,81 @@ def get_process_memory_mb() -> float:
     return round(process.memory_info().rss / (1024 * 1024), 2)
 
 
+def create_cli_keybindings() -> KeyBindings:
+    """Create key bindings for prompt_toolkit with native multiline editing and submit triggers.
+    
+    Submits on:
+    - Alt+Enter (or Escape then Enter)
+    - Double Enter (when cursor is at end of buffer and last line is blank)
+    - Single Enter for slash commands (/help, /exit, etc.)
+    - Ctrl+J / Ctrl+Enter
+    """
+    kb = KeyBindings()
+
+    @kb.add("c-m")  # Standard Enter key
+    def _(event):
+        buf = event.current_buffer
+        text = buf.text
+
+        # 1. Single-line slash commands submit immediately on single Enter
+        if text.strip().startswith("/"):
+            buf.validate_and_handle()
+            return
+
+        # 2. Double Enter: If cursor is at the end of the buffer and last line is empty, submit
+        if buf.cursor_position == len(text) and text.endswith("\n"):
+            buf.text = text.rstrip("\n")
+            buf.validate_and_handle()
+            return
+        elif not text.strip():
+            # Empty input on Enter
+            buf.validate_and_handle()
+            return
+
+        # Otherwise insert a newline for native multiline editing
+        buf.insert_text("\n")
+
+    @kb.add("escape", "enter")  # Alt+Enter (POSIX terminal escape sequence for Meta+Enter)
+    def _(event):
+        """Immediately submit multiline buffer on Alt+Enter."""
+        event.current_buffer.validate_and_handle()
+
+    @kb.add("c-j")  # Ctrl+Enter / LineFeed
+    def _(event):
+        """Submit multiline buffer on Ctrl+Enter / Ctrl+J."""
+        event.current_buffer.validate_and_handle()
+
+    return kb
+
+
+def prompt_continuation(width: int, line_number: int, is_soft_wrap: bool):
+    """Render visually distinct prompt continuation indicator for multiline input."""
+    return HTML("<ansibrightblack>  │ </ansibrightblack>")
+
+
 class InteractiveCLI:
-    """Rich interactive streaming terminal interface."""
+    """Rich interactive streaming terminal interface with prompt_toolkit multiline editing."""
 
     def __init__(self, assistant: AIAssistant):
         self.assistant = assistant
         self.console = Console()
         self.assistant.tool_confirmation_callback = self.prompt_tool_confirmation
+
+        # Initialize prompt_toolkit session with native POSIX cursor handling and multiline support
+        self.key_bindings = create_cli_keybindings()
+        history_path = os.path.expanduser("~/.finch_history")
+        try:
+            self.history = FileHistory(history_path)
+        except Exception:
+            self.history = InMemoryHistory()
+
+        self.prompt_session: PromptSession = PromptSession(
+            multiline=True,
+            key_bindings=self.key_bindings,
+            history=self.history,
+            prompt_continuation=prompt_continuation,
+            enable_history_search=True,
+        )
 
     async def prompt_tool_confirmation(self, tool_name: str, args: Dict[str, Any]) -> bool:
         """Prompt user for interactive confirmation before executing a tool in 'ask' mode."""
@@ -49,8 +122,8 @@ class InteractiveCLI:
                 pass
 
         try:
-            loop = asyncio.get_running_loop()
-            resp = await loop.run_in_executor(None, input, "➤ Allow execution? [y/N]: ")
+            conf_session = PromptSession(multiline=False)
+            resp = await conf_session.prompt_async(HTML("<ansiyellow>➤ Allow execution? [y/N]: </ansiyellow>"))
             confirmed = resp.strip().lower() in ("y", "yes")
         except (KeyboardInterrupt, EOFError):
             confirmed = False
@@ -90,7 +163,7 @@ class InteractiveCLI:
         panel = Panel(
             banner,
             title="[bold blue]🤖 Finch.ai Terminal[/bold blue]",
-            subtitle="[dim]Type /help for commands, /exit to quit[/dim]",
+            subtitle="[dim]Type /help for commands, Alt+Enter or Double Enter to send, /exit to quit[/dim]",
             border_style="cyan",
             box=ROUNDED,
         )
@@ -234,7 +307,8 @@ class InteractiveCLI:
                 "  [5] Cancel\n"
             )
             try:
-                choice = input("Select an option [1-5]: ").strip()
+                conf_session = PromptSession(multiline=False)
+                choice = conf_session.prompt("Select an option [1-5]: ").strip()
             except (KeyboardInterrupt, EOFError):
                 self.console.print("\n[dim]Wipe cancelled.[/dim]\n")
                 return
@@ -1214,12 +1288,16 @@ class InteractiveCLI:
         try:
             while True:
                 try:
-                    loop = asyncio.get_running_loop()
-                    user_input = await loop.run_in_executor(None, input, "➤ ")
+                    user_input = await self.prompt_session.prompt_async(
+                        HTML("<ansicyan><b>➤</b></ansicyan> ")
+                    )
                     keep_running = await self.handle_input(user_input)
                     if not keep_running:
                         break
-                except (KeyboardInterrupt, EOFError):
+                except KeyboardInterrupt:
+                    self.console.print("\n[dim]Input cancelled. Press Ctrl+D or type /exit to quit.[/dim]")
+                    continue
+                except EOFError:
                     self.console.print("\n[yellow]Session interrupted.[/yellow]")
                     break
         finally:

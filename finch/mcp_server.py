@@ -110,8 +110,40 @@ def get_compression_pipeline() -> ContextCompressionPipeline:
 
 
 # =============================================================================
-# MCP Tools: Memory & Long-Term Facts
+# MCP Tools: Memory & Long-Term Facts (Task 2.2)
 # =============================================================================
+
+@mcp.tool()
+def finch_remember_fact(fact: str, category: str = "general") -> Dict[str, Any]:
+    """Inserts new verified facts directly into Finch's persistent table.
+    
+    Args:
+        fact: Fact statement or user preference to record.
+        category: Category tag for the fact (default: 'general').
+    """
+    logger.info("finch_remember_fact called: fact=%r, category=%r", fact, category)
+    mgr = get_facts_manager()
+    fact_id = mgr.add_fact(fact=fact, category=category)
+    return {
+        "id": fact_id,
+        "fact": fact.strip(),
+        "category": category.strip().lower() or "general",
+        "status": "stored",
+    }
+
+
+@mcp.tool()
+def finch_get_user_facts(category: str = "") -> List[Dict[str, Any]]:
+    """Fetches persistent, verified user profile facts from user_facts.
+    
+    Args:
+        category: Optional category filter. If empty or omitted, returns all facts.
+    """
+    logger.info("finch_get_user_facts called: category=%r", category)
+    mgr = get_facts_manager()
+    cat_filter = category.strip() if category else None
+    return mgr.list_facts(category=cat_filter, limit=100)
+
 
 @mcp.tool()
 def remember_fact(fact: str, category: str = "general") -> str:
@@ -121,10 +153,8 @@ def remember_fact(fact: str, category: str = "general") -> str:
         fact: The factual statement or preference to record.
         category: Optional category tag (e.g. 'preference', 'tech_stack', 'project').
     """
-    logger.info("remember_fact called: category=%s", category)
-    mgr = get_facts_manager()
-    fact_id = mgr.add_fact(fact=fact, category=category)
-    return f"Fact successfully stored in long-term memory (ID: {fact_id}, Category: {category})."
+    res = finch_remember_fact(fact=fact, category=category)
+    return f"Fact successfully stored in long-term memory (ID: {res['id']}, Category: {res['category']})."
 
 
 @mcp.tool()
@@ -156,18 +186,18 @@ def forget_fact(fact_id: int) -> str:
 
 
 # =============================================================================
-# MCP Tools: Conversation Retrieval & Search
+# MCP Tools: Conversation Retrieval & Search (Task 2.2)
 # =============================================================================
 
 @mcp.tool()
-async def search_past_conversations(query: str, limit: int = 5) -> List[Dict[str, Any]]:
-    """Search archived conversation history using hybrid retrieval (FTS5 lexical + sqlite-vec semantic with RRF).
+async def finch_search_history(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Executes hybrid FTS5 + sqlite-vec RRF search across archived messages.
     
     Args:
         query: Search keywords, question, code snippet, or topic.
         limit: Maximum number of matching sessions to retrieve (default: 5).
     """
-    logger.info("search_past_conversations called: query=%r, limit=%d", query, limit)
+    logger.info("finch_search_history called: query=%r, limit=%d", query, limit)
     archive = get_archive()
     cfg = get_config()
     embedder = get_embedder(cfg)
@@ -179,6 +209,49 @@ async def search_past_conversations(query: str, limit: int = 5) -> List[Dict[str
         embedder=embedder,
     )
     return [r.to_dict() for r in results]
+
+
+@mcp.tool()
+def finch_get_transcript(session_id: str) -> Dict[str, Any]:
+    """Decompresses zstd records and returns structured dialogue turns.
+    
+    Args:
+        session_id: The unique session identifier (e.g. 'sess_...').
+    """
+    logger.info("finch_get_transcript called: session_id=%s", session_id)
+    archive = get_archive()
+    data = archive.get_session_transcript(session_id)
+    if not data:
+        return {
+            "session_id": session_id,
+            "found": False,
+            "turns": [],
+            "error": f"Session '{session_id}' not found.",
+        }
+    session = data["session"]
+    return {
+        "session_id": session.id,
+        "title": session.title,
+        "summary": session.summary,
+        "model": session.model,
+        "mode": session.mode,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+        "total_turns": len(data["turns"]),
+        "turns": data["turns"],
+        "formatted_transcript": data.get("formatted_transcript", ""),
+    }
+
+
+@mcp.tool()
+async def search_past_conversations(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Search archived conversation history using hybrid retrieval (FTS5 lexical + sqlite-vec semantic with RRF).
+    
+    Args:
+        query: Search keywords, question, code snippet, or topic.
+        limit: Maximum number of matching sessions to retrieve (default: 5).
+    """
+    return await finch_search_history(query=query, limit=limit)
 
 
 @mcp.tool()

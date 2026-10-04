@@ -114,6 +114,20 @@ python -m finch.mcp_server
 
 ---
 
+## Hermes Agent Integration
+
+Finch provides migration utilities to export foundational persona rules and persistent facts directly into Hermes Agent's native directories:
+
+```bash
+# Migrate active personality into ~/.hermes/SOUL.md and user_facts into ~/.hermes/memories/USER.md
+python -m finch.tools.export_hermes
+
+# Preview migration without writing files to disk
+python -m finch.tools.export_hermes --dry-run
+```
+
+---
+
 ## Technical Documentation & Architecture Reference
 
 For detailed subsystem architecture, database schemas, mathematical formulations (Reciprocal Rank Fusion, token compression economics), benchmarks, and developer guides, refer to the technical reference manual in [`docs/`](docs/):

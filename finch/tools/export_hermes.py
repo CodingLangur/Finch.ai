@@ -19,6 +19,111 @@ from finch.storage import SQLiteArchive
 from finch.memory import PersonaManager
 
 
+DEFAULT_FINCH_HERMES_TOOLS = [
+    "finch_search_history",
+    "finch_get_transcript",
+    "finch_get_user_facts",
+    "finch_remember_fact",
+    "finch_run_subagent",
+]
+
+
+def configure_hermes_mcp(
+    hermes_dir: Optional[str] = None,
+    config_file: Optional[str] = None,
+    command: str = "python",
+    args: Optional[List[str]] = None,
+    tools: Optional[List[str]] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Register Finch MCP server configuration in Hermes config.yaml.
+    
+    Args:
+        hermes_dir: Base directory for Hermes agent (default: ~/.hermes or $HERMES_DIR).
+        config_file: Optional direct path to config.yaml.
+        command: Command executable for starting MCP server (default: 'python').
+        args: Command line arguments (default: ['-m', 'finch.mcp_server']).
+        tools: List of exposed MCP tool names to include.
+        dry_run: If True, simulates configuration without writing to disk.
+        
+    Returns:
+        Dictionary with status and configuration file path.
+    """
+    import yaml
+
+    base_dir = os.path.abspath(
+        os.path.expanduser(hermes_dir or os.getenv("HERMES_DIR", "~/.hermes"))
+    )
+    target_config = os.path.abspath(
+        os.path.expanduser(config_file or os.path.join(base_dir, "config.yaml"))
+    )
+
+    cmd_args = args if args is not None else ["-m", "finch.mcp_server"]
+    included_tools = tools if tools is not None else list(DEFAULT_FINCH_HERMES_TOOLS)
+
+    config_data: Dict[str, Any] = {}
+    if os.path.exists(target_config):
+        try:
+            with open(target_config, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    config_data = loaded
+        except Exception:
+            config_data = {}
+
+    if "mcp_servers" not in config_data or not isinstance(config_data["mcp_servers"], dict):
+        config_data["mcp_servers"] = {}
+
+    config_data["mcp_servers"]["finch"] = {
+        "command": command,
+        "args": cmd_args,
+        "tools": {
+            "include": included_tools,
+        },
+    }
+
+    # Format cleanly matching Hermes specification
+    yaml_lines = ["mcp_servers:"]
+    for server_name, server_cfg in config_data["mcp_servers"].items():
+        if server_name == "finch":
+            yaml_lines.append(f"  {server_name}:")
+            yaml_lines.append(f"    command: \"{server_cfg['command']}\"")
+            args_formatted = ", ".join(f'"{a}"' for a in server_cfg["args"])
+            yaml_lines.append(f"    args: [{args_formatted}]")
+            yaml_lines.append("    tools:")
+            yaml_lines.append("      include:")
+            for t in server_cfg.get("tools", {}).get("include", []):
+                yaml_lines.append(f"        - {t}")
+        else:
+            # Preserve other servers as standard YAML block
+            sub_yaml = yaml.dump({server_name: server_cfg}, default_flow_style=False).strip()
+            yaml_lines.extend("  " + line for line in sub_yaml.splitlines())
+
+    # Preserve other top-level keys
+    other_keys = {k: v for k, v in config_data.items() if k != "mcp_servers"}
+    if other_keys:
+        other_yaml = yaml.dump(other_keys, default_flow_style=False).strip()
+        yaml_lines.append("")
+        yaml_lines.append(other_yaml)
+
+    content = "\n".join(yaml_lines) + "\n"
+
+    if not dry_run:
+        os.makedirs(os.path.dirname(target_config), exist_ok=True)
+        with open(target_config, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    return {
+        "status": "success",
+        "config_file": target_config,
+        "server_name": "finch",
+        "command": command,
+        "args": cmd_args,
+        "tools": included_tools,
+        "dry_run": dry_run,
+    }
+
+
 def export_to_hermes(
     hermes_dir: Optional[str] = None,
     personality_path: Optional[str] = None,
@@ -28,6 +133,7 @@ def export_to_hermes(
     delimiter: str = "§",
     include_category: bool = False,
     append: bool = False,
+    configure_mcp: bool = False,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Export Finch active personality and long-term user facts to Hermes Agent directories.
@@ -41,6 +147,7 @@ def export_to_hermes(
         delimiter: Line delimiter symbol used for memory entries in USER.md (default: §).
         include_category: Whether to prefix entries with [category] tags.
         append: If True, appends facts to existing USER.md instead of overwriting.
+        configure_mcp: If True, also registers Finch MCP server in config.yaml.
         dry_run: If True, performs read and formatting without writing files to disk.
         
     Returns:
@@ -114,6 +221,13 @@ def export_to_hermes(
         with open(dest_user, mode, encoding="utf-8") as f:
             f.write(user_content)
 
+    mcp_result = None
+    if configure_mcp:
+        mcp_result = configure_hermes_mcp(
+            hermes_dir=base_dir,
+            dry_run=dry_run,
+        )
+
     return {
         "status": "success",
         "hermes_dir": base_dir,
@@ -124,6 +238,7 @@ def export_to_hermes(
         "soul_bytes": len(soul_content.encode("utf-8")),
         "facts_count": len(fact_lines),
         "user_memories_bytes": len(user_content.encode("utf-8")),
+        "mcp_config": mcp_result,
         "dry_run": dry_run,
         "append": append,
     }
@@ -177,6 +292,11 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Append facts to existing USER.md instead of overwriting",
     )
     parser.add_argument(
+        "--configure-mcp",
+        action="store_true",
+        help="Register Finch MCP server in Hermes config.yaml",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Simulate migration without writing any files to disk",
@@ -203,6 +323,7 @@ def main(args: Optional[List[str]] = None) -> int:
             delimiter=parsed.delimiter,
             include_category=parsed.include_category,
             append=parsed.append,
+            configure_mcp=parsed.configure_mcp,
             dry_run=parsed.dry_run,
         )
     except Exception as e:
@@ -236,6 +357,13 @@ def main(args: Optional[List[str]] = None) -> int:
                 result["user_file"],
                 f"{result['facts_count']} facts ({result['user_memories_bytes']} B)",
             )
+            if result.get("mcp_config"):
+                table.add_row(
+                    "MCP Server Config",
+                    "Finch FastMCP Service",
+                    result["mcp_config"]["config_file"],
+                    f"{len(result['mcp_config']['tools'])} tools registered",
+                )
 
             status_note = (
                 "[yellow]Dry run simulation complete. No files were written to disk.[/yellow]"
@@ -253,6 +381,8 @@ def main(args: Optional[List[str]] = None) -> int:
             print(f"{prefix}Hermes Agent Seed Migration Complete:")
             print(f"  SOUL.md: {result['source_personality']} -> {result['soul_file']} ({result['soul_bytes']} bytes)")
             print(f"  USER.md: {result['source_db']} -> {result['user_file']} ({result['facts_count']} facts, {result['user_memories_bytes']} bytes)")
+            if result.get("mcp_config"):
+                print(f"  MCP Config: -> {result['mcp_config']['config_file']} ({len(result['mcp_config']['tools'])} tools)")
 
     return 0
 

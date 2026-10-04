@@ -165,13 +165,96 @@ class TestExportHermes(unittest.TestCase):
         soul_file = os.path.join(self.hermes_dir, "SOUL.md")
         self.assertTrue(os.path.exists(soul_file))
 
+    def test_configure_hermes_mcp_creates_config_yaml(self):
+        """Test configure_hermes_mcp registers Finch MCP server in config.yaml."""
+        import yaml
+        from finch.tools.export_hermes import configure_hermes_mcp, DEFAULT_FINCH_HERMES_TOOLS
+
+        res = configure_hermes_mcp(hermes_dir=self.hermes_dir)
+        self.assertEqual(res["status"], "success")
+
+        config_path = os.path.join(self.hermes_dir, "config.yaml")
+        self.assertTrue(os.path.exists(config_path))
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+
+        self.assertIn("mcp_servers", cfg)
+        self.assertIn("finch", cfg["mcp_servers"])
+        finch_cfg = cfg["mcp_servers"]["finch"]
+        self.assertEqual(finch_cfg["command"], "python")
+        self.assertEqual(finch_cfg["args"], ["-m", "finch.mcp_server"])
+        self.assertEqual(finch_cfg["tools"]["include"], DEFAULT_FINCH_HERMES_TOOLS)
+
+    def test_configure_hermes_mcp_merges_with_existing(self):
+        """Test configure_hermes_mcp preserves other configuration keys."""
+        import yaml
+        from finch.tools.export_hermes import configure_hermes_mcp
+
+        os.makedirs(self.hermes_dir, exist_ok=True)
+        config_path = os.path.join(self.hermes_dir, "config.yaml")
+        existing_data = {
+            "model": "claude-3-5-sonnet",
+            "mcp_servers": {
+                "filesystem": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                }
+            },
+        }
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(existing_data, f)
+
+        configure_hermes_mcp(hermes_dir=self.hermes_dir)
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            updated = yaml.safe_load(f)
+
+        self.assertEqual(updated["model"], "claude-3-5-sonnet")
+        self.assertIn("filesystem", updated["mcp_servers"])
+        self.assertIn("finch", updated["mcp_servers"])
+
+    def test_export_with_configure_mcp(self):
+        """Test export_to_hermes with configure_mcp=True creates SOUL.md, USER.md, and config.yaml."""
+        res = export_to_hermes(
+            hermes_dir=self.hermes_dir,
+            personality_path=self.personality_path,
+            db_path=self.db_path,
+            configure_mcp=True,
+        )
+
+        self.assertIsNotNone(res["mcp_config"])
+        self.assertTrue(os.path.exists(os.path.join(self.hermes_dir, "SOUL.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.hermes_dir, "memories", "USER.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.hermes_dir, "config.yaml")))
+
+    def test_cli_subprocess_with_configure_mcp(self):
+        """Test invoking python -m finch.tools.export_hermes --configure-mcp."""
+        cmd = [
+            sys.executable,
+            "-m",
+            "finch.tools.export_hermes",
+            "--hermes-dir", self.hermes_dir,
+            "--personality", self.personality_path,
+            "--db-path", self.db_path,
+            "--configure-mcp",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"CLI execution failed: {proc.stderr}")
+        self.assertIn("MCP Server Config", proc.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.hermes_dir, "config.yaml")))
+
     def test_ai_assistant_namespace_compatibility(self):
         """Test that ai_assistant.tools.export_hermes exposes the same functionality."""
-        from ai_assistant.tools import export_to_hermes as ai_export
-        from ai_assistant.tools.export_hermes import export_to_hermes as ai_export_module
+        from ai_assistant.tools import export_to_hermes as ai_export, configure_hermes_mcp as ai_cfg
+        from ai_assistant.tools.export_hermes import export_to_hermes as ai_export_module, configure_hermes_mcp as ai_cfg_module
+        from finch.tools.export_hermes import configure_hermes_mcp
 
         self.assertIs(ai_export, export_to_hermes)
         self.assertIs(ai_export_module, export_to_hermes)
+        self.assertIs(ai_cfg, configure_hermes_mcp)
+        self.assertIs(ai_cfg_module, configure_hermes_mcp)
+
 
 
 if __name__ == "__main__":

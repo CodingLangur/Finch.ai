@@ -2,6 +2,7 @@
 import asyncio
 import io
 import json
+import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -40,6 +41,8 @@ class TestFinchFastMCPServer(unittest.IsolatedAsyncioTestCase):
             "compress_context",
             "get_storage_stats",
             "run_finch_query",
+            "finch_run_subagent",
+            "run_subagent",
         ]
 
         for expected in expected_tools:
@@ -93,39 +96,231 @@ class TestFinchFastMCPServer(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(was_compressed)
         self.assertTrue(archive.compressor.is_compressed(compressed_payload))
 
-        archive.add_message(
-            session_id=test_session_id,
-            role="user",
-            content="Can you verify the quantum flux capacitor calibration?",
-        )
-        archive.add_message(
-            session_id=test_session_id,
-            role="assistant",
-            content=compressed_payload,  # Stored compressed
-        )
+        try:
+            archive.add_message(
+                session_id=test_session_id,
+                role="user",
+                content=f"Can you verify the quantum flux capacitor calibration {test_session_id}?",
+            )
+            archive.add_message(
+                session_id=test_session_id,
+                role="assistant",
+                content=compressed_payload,  # Stored compressed
+            )
 
-        # 1. Test finch_search_history
-        search_results = await finch_search_history("quantum flux capacitor", limit=5)
-        self.assertIsInstance(search_results, list)
-        found_sessions = [r["session_id"] for r in search_results]
-        self.assertIn(test_session_id, found_sessions)
+            # 1. Test finch_search_history
+            search_results = await finch_search_history(f"quantum flux capacitor {test_session_id}", limit=5)
+            self.assertIsInstance(search_results, list)
+            found_sessions = [r["session_id"] for r in search_results]
+            self.assertIn(test_session_id, found_sessions)
 
-        # 2. Test finch_get_transcript
-        transcript_data = finch_get_transcript(test_session_id)
-        self.assertIsInstance(transcript_data, dict)
-        self.assertEqual(transcript_data["session_id"], test_session_id)
-        self.assertIn("turns", transcript_data)
-        turns = transcript_data["turns"]
-        self.assertEqual(len(turns), 2)
+            # 2. Test finch_get_transcript
+            transcript_data = finch_get_transcript(test_session_id)
+            self.assertIsInstance(transcript_data, dict)
+            self.assertEqual(transcript_data["session_id"], test_session_id)
+            self.assertIn("turns", transcript_data)
+            turns = transcript_data["turns"]
+            self.assertEqual(len(turns), 2)
 
-        # Verify structured turn details
-        self.assertEqual(turns[0]["role"], "user")
-        self.assertIn("quantum flux capacitor", turns[0]["content"])
+            # Verify structured turn details
+            self.assertEqual(turns[0]["role"], "user")
+            self.assertIn("quantum flux capacitor", turns[0]["content"])
 
-        self.assertEqual(turns[1]["role"], "assistant")
-        # Ensure zstd record was decompressed back to original string!
-        self.assertFalse(turns[1]["content"].startswith("__ZSTD__:"))
-        self.assertEqual(turns[1]["content"], large_payload)
+            self.assertEqual(turns[1]["role"], "assistant")
+            # Ensure zstd record was decompressed back to original string!
+            self.assertFalse(turns[1]["content"].startswith("__ZSTD__:"))
+            self.assertEqual(turns[1]["content"], large_payload)
+        finally:
+            archive.delete_session(test_session_id)
+
+    async def test_finch_run_subagent_filesystem_and_python(self):
+        """Test finch_run_subagent executing filesystem and Python REPL tasks headlessly in agent mode."""
+        from finch.mcp_server import finch_run_subagent, get_archive
+        from finch.providers.base import BaseLLMProvider, ModelInfo, StreamChunk, StreamStats
+        from finch.core.assistant import AIAssistant
+        from unittest.mock import patch
+        import tempfile
+        import shutil
+
+        tmp_dir = tempfile.mkdtemp()
+        test_file = os.path.join(tmp_dir, "generated_script.py")
+
+        try:
+            class MockSubagentProvider(BaseLLMProvider):
+                def __init__(self):
+                    self.call_count = 0
+
+                @property
+                def name(self) -> str:
+                    return "MockSubagentProvider"
+
+                async def health_check(self) -> bool:
+                    return True
+
+                async def list_models(self) -> List[ModelInfo]:
+                    return [ModelInfo(name="mock-subagent-model")]
+
+                async def stream_chat(
+                    self,
+                    messages: List[Dict[str, Any]],
+                    model: str,
+                    options: Optional[Dict[str, Any]] = None,
+                    tools: Optional[List[Dict[str, Any]]] = None,
+                ) -> AsyncGenerator[StreamChunk, None]:
+                    self.call_count += 1
+                    if self.call_count == 1:
+                        yield StreamChunk(
+                            thinking_delta="Step 1: Write Python script file to disk...",
+                            tool_calls=[{
+                                "id": "call_1",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": {
+                                        "file_path": test_file,
+                                        "content": "val = 40 + 2\nprint(f'COMPUTED:{val}')\n",
+                                    },
+                                },
+                            }],
+                        )
+                    elif self.call_count == 2:
+                        yield StreamChunk(
+                            thinking_delta="Step 2: Execute script via Python interpreter...",
+                            tool_calls=[{
+                                "id": "call_2",
+                                "function": {
+                                    "name": "python_interpreter",
+                                    "arguments": {
+                                        "code": f"with open(r'{test_file}') as f: exec(f.read())",
+                                    },
+                                },
+                            }],
+                        )
+                    else:
+                        yield StreamChunk(
+                            delta="Python script generated and executed successfully with result COMPUTED:42.",
+                            is_done=True,
+                            stats=StreamStats(ttft_ms=12.0, total_duration_ms=45.0, eval_count=30),
+                        )
+
+            mock_prov = MockSubagentProvider()
+            original_init = AIAssistant.__init__
+
+            def custom_init(assistant_self, *args, **kwargs):
+                kwargs["provider"] = mock_prov
+                original_init(assistant_self, *args, **kwargs)
+
+            with patch.object(AIAssistant, "__init__", custom_init):
+                result = await finch_run_subagent(
+                    instruction="Create a script that computes 42 and execute it with Python REPL.",
+                    max_turns=6,
+                )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["status"], "completed")
+            self.assertIn("COMPUTED:42", result["response"])
+            self.assertIn("write_file", result["tools_executed"])
+            self.assertIn("python_interpreter", result["tools_executed"])
+            self.assertGreaterEqual(result["agent_turns"], 2)
+            self.assertEqual(result["max_turns"], 6)
+
+            # Check that file was created on disk
+            self.assertTrue(os.path.exists(test_file))
+            with open(test_file, "r", encoding="utf-8") as f:
+                self.assertIn("COMPUTED", f.read())
+
+            # Check that conversations.db was updated with agent execution metadata
+            archive = get_archive()
+            session_id = result["session_id"]
+            db_session = archive.get_session(session_id)
+            self.assertIsNotNone(db_session)
+            self.assertEqual(db_session.mode, "agent")
+            self.assertIn("Subagent:", db_session.title)
+
+            db_messages = archive.get_messages(session_id)
+            self.assertGreaterEqual(len(db_messages), 2)
+            assistant_record = [m for m in db_messages if m.role == "assistant"][-1]
+            self.assertIsNotNone(assistant_record.metadata)
+            self.assertEqual(assistant_record.metadata["mode"], "agent")
+            self.assertEqual(assistant_record.metadata["max_turns"], 6)
+            self.assertIn("write_file", assistant_record.metadata["tools_executed"])
+            self.assertIn("python_interpreter", assistant_record.metadata["tools_executed"])
+
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    async def test_finch_run_subagent_shell_execution(self):
+        """Test finch_run_subagent executing a delegated shell execution command."""
+        from finch.mcp_server import run_subagent, get_archive
+        from finch.providers.base import BaseLLMProvider, ModelInfo, StreamChunk, StreamStats
+        from finch.core.assistant import AIAssistant
+        from unittest.mock import patch
+
+        class MockShellAgentProvider(BaseLLMProvider):
+            def __init__(self):
+                self.call_count = 0
+
+            @property
+            def name(self) -> str:
+                return "MockShellAgentProvider"
+
+            async def health_check(self) -> bool:
+                return True
+
+            async def list_models(self) -> List[ModelInfo]:
+                return [ModelInfo(name="mock-shell-model")]
+
+            async def stream_chat(
+                self,
+                messages: List[Dict[str, Any]],
+                model: str,
+                options: Optional[Dict[str, Any]] = None,
+                tools: Optional[List[Dict[str, Any]]] = None,
+            ) -> AsyncGenerator[StreamChunk, None]:
+                self.call_count += 1
+                if self.call_count == 1:
+                    yield StreamChunk(
+                        thinking_delta="Running shell echo command...",
+                        tool_calls=[{
+                            "id": "call_sh_1",
+                            "function": {
+                                "name": "run_terminal_command",
+                                "arguments": {
+                                    "command": "echo 'Subagent Shell Ping OK'",
+                                },
+                            },
+                        }],
+                    )
+                else:
+                    yield StreamChunk(
+                        delta="Shell command succeeded: Subagent Shell Ping OK",
+                        is_done=True,
+                        stats=StreamStats(ttft_ms=8.0, total_duration_ms=30.0, eval_count=18),
+                    )
+
+        mock_prov = MockShellAgentProvider()
+        original_init = AIAssistant.__init__
+
+        def custom_init(assistant_self, *args, **kwargs):
+            kwargs["provider"] = mock_prov
+            original_init(assistant_self, *args, **kwargs)
+
+        with patch.object(AIAssistant, "__init__", custom_init):
+            # Test the run_subagent alias as well
+            result = await run_subagent(
+                instruction="Run echo 'Subagent Shell Ping OK' in terminal",
+                max_turns=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("Subagent Shell Ping OK", result["response"])
+        self.assertIn("run_terminal_command", result["tools_executed"])
+        self.assertEqual(result["max_turns"], 4)
+
+        archive = get_archive()
+        session_id = result["session_id"]
+        db_messages = archive.get_messages(session_id)
+        assistant_record = [m for m in db_messages if m.role == "assistant"][-1]
+        self.assertIn("run_terminal_command", assistant_record.metadata["tools_executed"])
 
     async def test_resources_registered(self):
         """Verify Finch resources are exposed over MCP."""
@@ -243,6 +438,22 @@ class TestFinchFastMCPServer(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(get_resp.get("id"), 3)
             self.assertIn("result", get_resp)
             self.assertFalse(get_resp["result"].get("isError", False))
+
+            # 4. List tools over JSON-RPC and verify finch_run_subagent is exposed
+            list_tools_req = {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/list",
+                "params": {},
+            }
+            proc.stdin.write(json.dumps(list_tools_req).encode("utf-8") + b"\n")
+            await proc.stdin.drain()
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+            list_resp = json.loads(line.decode("utf-8").strip())
+            self.assertEqual(list_resp.get("id"), 4)
+            tool_names = [t["name"] for t in list_resp["result"]["tools"]]
+            self.assertIn("finch_run_subagent", tool_names)
+            self.assertIn("run_subagent", tool_names)
 
         finally:
             proc.kill()

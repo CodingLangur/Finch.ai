@@ -350,6 +350,108 @@ async def run_finch_query(prompt: str, mode: str = "chat") -> Dict[str, Any]:
     }
 
 
+@mcp.tool()
+async def finch_run_subagent(
+    instruction: str,
+    max_turns: int = 8,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Spins up Finch's autonomous while loop headlessly in mode = "agent".
+    
+    Allows external orchestrators to delegate local filesystem, Python REPL,
+    or shell execution tasks to Finch, applying Finch's Headroom compression
+    and logging execution metadata directly to conversations.db.
+    
+    Args:
+        instruction: Task instruction, goal, or execution request for the subagent.
+        max_turns: Maximum autonomous multi-turn execution steps (default: 8).
+        model: Optional model name override for this subagent execution.
+    """
+    logger.info("finch_run_subagent called: instruction=%r, max_turns=%d, model=%r", instruction, max_turns, model)
+    cfg = get_config()
+    archive = get_archive()
+    assistant = AIAssistant(config=cfg, archive=archive)
+    assistant.set_mode("agent")
+    if model:
+        assistant.set_model(model)
+
+    # Set descriptive session title in conversations.db
+    clean_instr = instruction.strip().replace("\n", " ")
+    subagent_title = f"Subagent: {clean_instr[:45]}..." if len(clean_instr) > 45 else f"Subagent: {clean_instr}"
+    archive.update_session_summary(assistant.current_session.id, title=subagent_title)
+
+    # Configure autonomous headless tool permissions (auto-allow filesystem, python, terminal)
+    assistant.set_tool_permission("terminal", "auto")
+    assistant.set_tool_permission("python", "auto")
+    assistant.set_tool_permission("files", "auto")
+    if cfg.enable_web_tool:
+        assistant.set_tool_permission("web", "auto")
+
+    content_parts: List[str] = []
+    thinking_parts: List[str] = []
+    tools_called: List[Dict[str, Any]] = []
+    notices: List[str] = []
+    last_compression_stats = None
+
+    try:
+        async for chunk in assistant.chat_stream(instruction, max_turns=max_turns):
+            if chunk.delta:
+                content_parts.append(chunk.delta)
+            if chunk.thinking_delta:
+                thinking_parts.append(chunk.thinking_delta)
+            if chunk.tool_calls:
+                tools_called.extend(chunk.tool_calls)
+            if chunk.tool_call_notice:
+                notices.append(chunk.tool_call_notice)
+            if chunk.compression_stats:
+                last_compression_stats = chunk.compression_stats
+
+        msgs = archive.get_messages(assistant.current_session.id)
+        assistant_msg = next((m for m in reversed(msgs) if m.role == "assistant"), None)
+        execution_metadata = assistant_msg.metadata if (assistant_msg and assistant_msg.metadata) else {}
+    finally:
+        assistant.close()
+
+    return {
+        "response": "".join(content_parts).strip(),
+        "thinking": "".join(thinking_parts).strip() or None,
+        "tools_called": tools_called,
+        "tools_executed": execution_metadata.get("tools_executed", []),
+        "agent_turns": execution_metadata.get("agent_turns", 1),
+        "max_turns": max_turns,
+        "notices": notices,
+        "session_id": assistant.current_session.id,
+        "compression": execution_metadata.get("compression") or (
+            {
+                "tokens_before": last_compression_stats.tokens_before,
+                "tokens_after": last_compression_stats.tokens_after,
+                "tokens_saved": last_compression_stats.tokens_saved,
+                "savings_pct": last_compression_stats.savings_pct,
+            }
+            if last_compression_stats
+            else None
+        ),
+        "execution_metadata": execution_metadata,
+        "status": "completed",
+    }
+
+
+@mcp.tool()
+async def run_subagent(
+    instruction: str,
+    max_turns: int = 8,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute an autonomous subagent task headlessly in agent mode (alias for finch_run_subagent).
+    
+    Args:
+        instruction: Task instruction, goal, or execution request for the subagent.
+        max_turns: Maximum autonomous multi-turn execution steps (default: 8).
+        model: Optional model name override for this subagent execution.
+    """
+    return await finch_run_subagent(instruction=instruction, max_turns=max_turns, model=model)
+
+
 # =============================================================================
 # MCP Resources
 # =============================================================================

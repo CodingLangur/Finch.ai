@@ -533,7 +533,10 @@ class AIAssistant:
         return await self.provider.health_check()
 
     async def chat_stream(
-        self, user_input: str, enable_tools: bool = True
+        self,
+        user_input: str,
+        enable_tools: bool = True,
+        max_turns: Optional[int] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Process user input, stream model response, execute tools, and persist turn.
         
@@ -566,6 +569,7 @@ class AIAssistant:
         last_chunk: Optional[StreamChunk] = None
         total_eval_tokens = 0
         agent_turns = 1
+        effective_max_turns = max_turns if max_turns is not None else getattr(self.config, "agent_max_turns", 10)
 
         try:
             if not is_agent_mode:
@@ -685,12 +689,11 @@ class AIAssistant:
                 # Executes tool calls sequentially until completion or max turns reached
                 # =========================================================================
                 active_tools = self.get_active_tools(enable_tools=enable_tools)
-                max_turns = getattr(self.config, "agent_max_turns", 10)
                 running_payload = list(effective_payload)
                 turn_count = 0
                 turn_tool_calls: List[Dict[str, Any]] = []
 
-                while turn_count < max_turns:
+                while turn_count < effective_max_turns:
                     turn_count += 1
                     agent_turns = turn_count
                     turn_content: List[str] = []
@@ -830,6 +833,7 @@ class AIAssistant:
             }
             if is_agent_mode:
                 turn_meta["agent_turns"] = agent_turns
+                turn_meta["max_turns"] = effective_max_turns
             if accumulated_tool_calls:
                 turn_meta["tool_calls"] = accumulated_tool_calls
                 turn_meta["tools_executed"] = all_tools_executed

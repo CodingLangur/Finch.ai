@@ -89,6 +89,31 @@ Control Finch.ai inside an active session using slash commands:
 
 ---
 
+## Model Context Protocol (MCP) Server
+
+Finch exposes its memory, hybrid search, context compression, and autonomous agent capabilities as a standard FastMCP service over STDIO transport:
+
+```bash
+# Run Finch FastMCP service
+python -m finch.mcp_server
+```
+
+### Exposed MCP Tools
+
+| Tool | Description |
+| :--- | :--- |
+| `finch_run_subagent(instruction, max_turns=8)` | Headless multi-turn agent execution delegating filesystem, Python REPL, or shell tasks with Headroom compression and DB logging |
+| `run_subagent(instruction, max_turns=8)` | Alias for autonomous subagent delegation |
+| `finch_remember_fact(fact, category)` | Insert verified facts directly into Finch long-term persistent memory |
+| `finch_get_user_facts(category)` | Fetch persistent verified user profile facts from `user_facts` table |
+| `finch_search_history(query, limit=5)` | Hybrid FTS5 + `sqlite-vec` RRF search across archived conversations |
+| `finch_get_transcript(session_id)` | Retrieve and decompress zstd turn-by-turn dialogue transcripts |
+| `compress_context(messages, model)` | Run Headroom context compression pipeline on message payloads |
+| `run_finch_query(prompt, mode)` | Execute queries through Finch orchestrator in chat or agent mode |
+| `get_storage_stats()` | Retrieve SQLite database storage, WAL, and telemetry metrics |
+
+---
+
 ## Technical Documentation & Architecture Reference
 
 For detailed subsystem architecture, database schemas, mathematical formulations (Reciprocal Rank Fusion, token compression economics), benchmarks, and developer guides, refer to the technical reference manual in [`docs/`](docs/):

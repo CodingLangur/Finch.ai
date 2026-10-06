@@ -134,7 +134,7 @@ def finch_remember_fact(fact: str, category: str = "general") -> Dict[str, Any]:
 
 @mcp.tool()
 def finch_get_user_facts(category: str = "") -> List[Dict[str, Any]]:
-    """Fetches persistent, verified user profile facts from user_facts.
+    """Fetches persistent, verified facts, user profile, and preferences regarding the user's development environment, setup, and projects.
     
     Args:
         category: Optional category filter. If empty or omitted, returns all facts.
@@ -143,6 +143,17 @@ def finch_get_user_facts(category: str = "") -> List[Dict[str, Any]]:
     mgr = get_facts_manager()
     cat_filter = category.strip() if category else None
     return mgr.list_facts(category=cat_filter, limit=100)
+
+
+@mcp.tool()
+def get_user_facts(category: str = "") -> List[Dict[str, Any]]:
+    """Fetches persistent, verified facts, user profile, and preferences regarding the user's development environment, setup, and projects.
+    
+    Args:
+        category: Optional category filter. If empty or omitted, returns all facts.
+    """
+    logger.info("get_user_facts called: category=%r", category)
+    return finch_get_user_facts(category=category)
 
 
 @mcp.tool()
@@ -241,6 +252,16 @@ def finch_get_transcript(session_id: str) -> Dict[str, Any]:
         "turns": data["turns"],
         "formatted_transcript": data.get("formatted_transcript", ""),
     }
+
+
+@mcp.tool()
+def get_transcript(session_id: str) -> Dict[str, Any]:
+    """Decompresses zstd records and returns structured dialogue turns.
+    
+    Args:
+        session_id: The unique session identifier (e.g. 'sess_...').
+    """
+    return finch_get_transcript(session_id=session_id)
 
 
 @mcp.tool()
@@ -356,14 +377,13 @@ async def finch_run_subagent(
     max_turns: int = 8,
     model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Spins up Finch's autonomous while loop headlessly in mode = "agent".
+    """Spins up Finch's autonomous while loop headlessly in mode = "agent" to execute tasks, run local scripts, shell commands, or filesystem operations.
     
-    Allows external orchestrators to delegate local filesystem, Python REPL,
-    or shell execution tasks to Finch, applying Finch's Headroom compression
-    and logging execution metadata directly to conversations.db.
+    Allows external orchestrators like Hermes to delegate local script execution, Python code,
+    or shell tasks to Finch, applying Finch's Headroom compression and logging execution metadata directly to conversations.db.
     
     Args:
-        instruction: Task instruction, goal, or execution request for the subagent.
+        instruction: Task instruction, local script to run, goal, or execution request for the subagent.
         max_turns: Maximum autonomous multi-turn execution steps (default: 8).
         model: Optional model name override for this subagent execution.
     """
@@ -442,10 +462,10 @@ async def run_subagent(
     max_turns: int = 8,
     model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute an autonomous subagent task headlessly in agent mode (alias for finch_run_subagent).
+    """Execute an autonomous subagent task headlessly in agent mode to run local scripts, shell commands, or tasks (alias for finch_run_subagent).
     
     Args:
-        instruction: Task instruction, goal, or execution request for the subagent.
+        instruction: Task instruction, local script to run, goal, or execution request for the subagent.
         max_turns: Maximum autonomous multi-turn execution steps (default: 8).
         model: Optional model name override for this subagent execution.
     """

@@ -35,22 +35,31 @@ CREATE TABLE IF NOT EXISTS sessions (
 Maintains the complete sequential dialogue history with foreign-key cascades:
 \begin{lstlisting}[language=SQL]
 CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    model TEXT,
-    prompt_tokens INTEGER DEFAULT 0,
-    eval_tokens INTEGER DEFAULT 0,
-    eval_duration_ms REAL DEFAULT 0.0,
-    tokens_per_second REAL DEFAULT 0.0,
-    ttft_ms REAL DEFAULT 0.0,
-    reasoning_content TEXT,
-    tool_calls TEXT,
-    tool_call_id TEXT,
-    compressed INTEGER DEFAULT 0
+    thinking TEXT,
+    tokens INTEGER,
+    timestamp TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+\end{lstlisting}
+
+\subsection{The \texttt{user\_facts} Table}
+Maintains verified user profile preferences and long-term project facts isolated from active sessions:
+\begin{lstlisting}[language=SQL]
+CREATE TABLE IF NOT EXISTS user_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_user_facts_category ON user_facts(category);
 \end{lstlisting}
 
 \section{Sub-Millisecond Lexical Search with FTS5}
@@ -58,11 +67,11 @@ To deliver instantaneous recall of technical terms, code snippets, dates, and fi
 
 \begin{lstlisting}[language=SQL]
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    message_id UNINDEXED,
-    session_id UNINDEXED,
-    role,
     content,
-    tokenize = 'porter unicode61'
+    role,
+    session_id UNINDEXED,
+    content='messages',
+    content_rowid='id'
 );
 \end{lstlisting}
 
@@ -70,19 +79,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 To eliminate indexing lag and maintain ACID consistency, three database triggers synchronize \texttt{messages\_fts} synchronously on write operations:
 
 \begin{lstlisting}[language=SQL]
-CREATE TRIGGER IF NOT EXISTS trg_messages_ai AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(message_id, session_id, role, content)
-    VALUES (new.id, new.session_id, new.role, new.content);
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content, role, session_id)
+    VALUES (new.id, new.content, new.role, new.session_id);
 END;
 
-CREATE TRIGGER IF NOT EXISTS trg_messages_ad AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts WHERE message_id = old.id;
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content, role, session_id)
+    VALUES('delete', old.id, old.content, old.role, old.session_id);
 END;
 
-CREATE TRIGGER IF NOT EXISTS trg_messages_au AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts WHERE message_id = old.id;
-    INSERT INTO messages_fts(message_id, session_id, role, content)
-    VALUES (new.id, new.session_id, new.role, new.content);
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content, role, session_id)
+    VALUES('delete', old.id, old.content, old.role, old.session_id);
+    INSERT INTO messages_fts(rowid, content, role, session_id)
+    VALUES (new.id, new.content, new.role, new.session_id);
 END;
 \end{lstlisting}
 

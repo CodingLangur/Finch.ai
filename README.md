@@ -231,7 +231,8 @@ When connected via MCP, Finch exposes the following tools to Claude Desktop, Her
 For detailed mathematical specifications (Reciprocal Rank Fusion formulas, token compression economics), database schemas, LaTeX manual source, and benchmarking data:
 
 - 📖 **Comprehensive PDF Manual**: [`docs/main.pdf`](docs/main.pdf)
-- 📂 **Architecture Chapters**: [`docs/sections/`](docs/sections/)
+- 📐 **Deep-Dive Architecture & Schemas**: [`docs/architecture.md`](docs/architecture.md)
+- 📂 **Modular Architecture Chapters**: [`docs/sections/`](docs/sections/)
 - 🛠️ **Build Manual from LaTeX**: See [`docs/README.md`](docs/README.md) (`make` or `./build.sh`)
 - 🧪 **Benchmarks Suite**: [`benchmarks/`](benchmarks/)
 

@@ -4,6 +4,11 @@ This directory contains the comprehensive LaTeX technical documentation and arch
 
 The generated documentation is compiled into [`main.pdf`](main.pdf) (or readable directly in PDF viewers).
 
+## Architecture Specification
+
+In addition to the compiled LaTeX manual, a lightweight, version-controlled markdown reference containing the developmental phase logs (Phases 3–8), raw SQLite table schemas, and synchronization triggers is available at:
+- **Markdown Specification**: [`architecture.md`](architecture.md)
+
 ---
 
 ## Document Overview

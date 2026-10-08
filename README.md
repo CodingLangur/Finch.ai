@@ -201,7 +201,9 @@ Inside an active CLI session, use slash commands to inspect state, adjust guardr
 | **`/mode`** | `/mode [chat\|agent]` | Switch between single-turn Chat mode and autonomous multi-turn Agent mode. |
 | **`/persona`** | `/persona [reload\|adapt\|edit]` | Inspect, evolve, or reload system prompt rules from `personality.md`. |
 | **`/compress`** | `/compress [on\|off\|stats]` | Toggle Headroom context compression and view token reduction percentages. |
-| **`/models`** | `/models` / `/use <model>` | Enumerate detected models or switch the active inference model on the fly. |
+| **`/provider`** | `/provider [gemini\|ollama] [key]` | Inspect current provider, dynamically switch runtime, or configure API key. |
+| **`/providers`** | `/providers` | Table of all configured inference providers, endpoints, and health status. |
+| **`/models`** | `/models [provider\|all]` / `/use <model>` | View models for current, specific, or all providers, or switch active model. |
 | **`/export`** | `/export <md\|html\|bundle>` | Export session as GitHub-flavored Markdown, styled HTML, or backup zip. |
 | **`/help`** | `/help` | Print the full interactive command reference manual. |
 

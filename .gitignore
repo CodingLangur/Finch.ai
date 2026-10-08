@@ -48,6 +48,10 @@ conversations_archive.db
 test_*.db
 personality.md.bak
 
+# Backups and archive exports
+backups/
+*.zip
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

@@ -100,9 +100,9 @@ class AIAssistant:
         self.embedder = embedder or get_embedder(self.config)
         if provider:
             self.provider = provider
-        elif self.config.provider.lower() == "gemini" and self.config.gemini_api_key:
+        elif self.config.provider.lower() == "gemini":
             self.provider = GeminiProvider(
-                api_key=self.config.gemini_api_key,
+                api_key=self.config.gemini_api_key or "",
                 timeout=self.config.request_timeout,
             )
         elif self.config.provider.lower() in ("openai", "openai_compatible", "compatible"):
@@ -378,6 +378,88 @@ class AIAssistant:
         """Switch the active generation model."""
         self.active_model = model_name.strip()
 
+    def switch_provider(
+        self,
+        provider_name: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> tuple[bool, str]:
+        """Dynamically switch the active LLM provider.
+
+        Args:
+            provider_name: 'ollama' or 'gemini' (or 'openai', 'openai_compatible')
+            api_key: Optional API key override
+            base_url: Optional endpoint URL override
+            model: Optional model to activate after switching
+
+        Returns:
+            (success: bool, message: str)
+        """
+        prov_key = provider_name.strip().lower()
+        if prov_key == "gemini":
+            key_to_use = api_key or self.config.gemini_api_key
+            if not key_to_use:
+                return False, "Gemini API key is required. Run: /provider gemini <api_key>"
+            self.config.gemini_api_key = key_to_use
+            self.config.provider = "gemini"
+            self.provider = GeminiProvider(
+                api_key=key_to_use,
+                timeout=self.config.request_timeout,
+            )
+            self.summarizer.provider = self.provider
+
+            if model:
+                self.active_model = model.strip()
+            elif not self.active_model.lower().startswith("gemini"):
+                self.active_model = self.config.gemini_default_model or "gemini-2.5-flash"
+
+            return True, f"Switched to Google Gemini (Active Model: {self.active_model})"
+
+        elif prov_key == "ollama":
+            if base_url:
+                self.config.ollama_host = base_url.strip()
+            self.config.provider = "ollama"
+            self.provider = OllamaProvider(
+                base_url=self.config.ollama_host,
+                timeout=self.config.request_timeout,
+            )
+            self.summarizer.provider = self.provider
+
+            if model:
+                self.active_model = model.strip()
+            elif any(k in self.active_model.lower() for k in ("gemini", "gpt")):
+                import os
+                self.active_model = os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.2:latest")
+
+            return True, f"Switched to Ollama (Active Model: {self.active_model})"
+
+        elif prov_key in ("openai", "openai_compatible", "compatible"):
+            key_to_use = api_key or self.config.openai_api_key
+            url_to_use = base_url or self.config.openai_base_url
+            self.config.provider = "openai"
+            if key_to_use:
+                self.config.openai_api_key = key_to_use
+            if url_to_use:
+                self.config.openai_base_url = url_to_use
+            self.provider = OpenAICompatibleProvider(
+                api_key=key_to_use,
+                base_url=url_to_use,
+                timeout=self.config.request_timeout,
+                default_model=self.config.openai_default_model,
+            )
+            self.summarizer.provider = self.provider
+
+            if model:
+                self.active_model = model.strip()
+            else:
+                self.active_model = self.config.openai_default_model
+
+            return True, f"Switched to OpenAI-compatible provider (Active Model: {self.active_model})"
+
+        else:
+            return False, f"Unknown provider '{provider_name}'. Supported: ollama, gemini, openai"
+
     def clear_history(self) -> None:
         """Reset conversation memory while preserving system prompt."""
         self.memory.clear(keep_system=True)
@@ -524,9 +606,105 @@ class AIAssistant:
 
         return False, "Model did not produce an updated persona inside <personality_update> tags."
 
-    async def list_available_models(self) -> List[ModelInfo]:
-        """Query available models from the provider."""
-        return await self.provider.list_models()
+    async def list_available_models(
+        self, provider_name: Optional[str] = None
+    ) -> List[ModelInfo]:
+        """Query available models from the active or specified provider."""
+        if not provider_name or provider_name.strip().lower() in (
+            "current",
+            "active",
+            self.provider.name.lower(),
+        ):
+            return await self.provider.list_models()
+
+        prov_key = provider_name.strip().lower()
+        if prov_key == "gemini":
+            if not self.config.gemini_api_key:
+                raise RuntimeError(
+                    "Gemini API key is not configured. Provide it via: /provider gemini <api_key>"
+                )
+            prov = GeminiProvider(
+                api_key=self.config.gemini_api_key,
+                timeout=self.config.request_timeout,
+            )
+            return await prov.list_models()
+
+        elif prov_key == "ollama":
+            prov = OllamaProvider(
+                base_url=self.config.ollama_host,
+                timeout=self.config.request_timeout,
+            )
+            return await prov.list_models()
+
+        elif prov_key in ("openai", "openai_compatible"):
+            prov = OpenAICompatibleProvider(
+                api_key=self.config.openai_api_key,
+                base_url=self.config.openai_base_url,
+                timeout=self.config.request_timeout,
+                default_model=self.config.openai_default_model,
+            )
+            return await prov.list_models()
+
+        else:
+            raise ValueError(f"Unknown provider '{provider_name}'. Supported: ollama, gemini, openai")
+
+    async def list_models_all_providers(self) -> Dict[str, Dict[str, Any]]:
+        """Fetch models across all configured providers concurrently."""
+        results: Dict[str, Dict[str, Any]] = {}
+
+        # 1. Ollama
+        try:
+            ollama_prov = (
+                self.provider
+                if self.provider.name == "Ollama"
+                else OllamaProvider(base_url=self.config.ollama_host, timeout=5.0)
+            )
+            ollama_models = await ollama_prov.list_models()
+            results["Ollama"] = {
+                "models": ollama_models,
+                "error": None,
+                "active": self.provider.name == "Ollama",
+                "endpoint": self.config.ollama_host,
+            }
+        except Exception as e:
+            results["Ollama"] = {
+                "models": [],
+                "error": str(e),
+                "active": self.provider.name == "Ollama",
+                "endpoint": self.config.ollama_host,
+            }
+
+        # 2. Gemini
+        try:
+            if not self.config.gemini_api_key:
+                results["Gemini"] = {
+                    "models": [],
+                    "error": "API key not configured",
+                    "active": self.provider.name == "Gemini",
+                    "endpoint": "generativelanguage.googleapis.com",
+                }
+            else:
+                gemini_prov = (
+                    self.provider
+                    if self.provider.name == "Gemini"
+                    else GeminiProvider(api_key=self.config.gemini_api_key, timeout=10.0)
+                )
+                gemini_models = await gemini_prov.list_models()
+                results["Gemini"] = {
+                    "models": gemini_models,
+                    "error": None,
+                    "active": self.provider.name == "Gemini",
+                    "endpoint": "generativelanguage.googleapis.com",
+                }
+        except Exception as e:
+            results["Gemini"] = {
+                "models": [],
+                "error": str(e),
+                "active": self.provider.name == "Gemini",
+                "endpoint": "generativelanguage.googleapis.com",
+            }
+
+        return results
 
     async def verify_provider_health(self) -> bool:
         """Check provider connectivity."""

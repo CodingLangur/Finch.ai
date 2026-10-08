@@ -10,7 +10,6 @@ Submodules:
 - core: Orchestration engine.
 - ui: Terminal interface.
 """
-
 from .config import AppConfig, config
 from .core.assistant import AIAssistant, AssistantMode, ToolPermissionMode
 

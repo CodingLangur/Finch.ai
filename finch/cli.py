@@ -1,7 +1,17 @@
 """CLI entry point for Finch.ai."""
+import os
+import sys
+
+# Auto re-exec inside local .venv if run with global python without dependencies
+_venv_python = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "bin", "python")
+if os.path.exists(_venv_python) and sys.executable != _venv_python:
+    try:
+        import dotenv  # noqa: F401
+    except ImportError:
+        os.execv(_venv_python, [_venv_python] + sys.argv)
+
 import argparse
 import asyncio
-import sys
 
 from finch.config import AppConfig
 from finch.core.assistant import AIAssistant, AssistantMode
@@ -92,12 +102,19 @@ async def main_async() -> None:
             config.default_model = config.gemini_default_model
         elif args.provider in ("openai", "openai_compatible") and not args.model:
             config.default_model = config.openai_default_model
+    elif args.model and "gemini" in args.model.lower():
+        config.provider = "gemini"
+        config.default_model = args.model
     if args.base_url:
         if config.provider in ("openai", "openai_compatible"):
             config.openai_base_url = args.base_url
         else:
             config.ollama_host = args.base_url
     if args.api_key:
+        if args.provider is None and (args.api_key.startswith("AQ.") or args.api_key.startswith("AIza")):
+            config.provider = "gemini"
+            if not args.model:
+                config.default_model = config.gemini_default_model
         if config.provider == "gemini":
             config.gemini_api_key = args.api_key
         else:

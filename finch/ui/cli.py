@@ -187,7 +187,9 @@ class InteractiveCLI:
         table.add_row("/hybrid <query>", "Semantic & Hybrid Search combining FTS5 and sqlite-vec (RRF)")
         table.add_row("/transcript [id]", "View full dialogue transcript for an identified session")
         table.add_row("/new [title]", "Start a fresh session and clear in-memory context")
-        table.add_row("/models", "List available models with metadata")
+        table.add_row("/provider [name] [key]", "View current provider, switch (ollama|gemini), or configure API key")
+        table.add_row("/providers", "List all supported providers, endpoints, and statuses")
+        table.add_row("/models [provider|all]", "List available models (e.g. /models gemini, /models ollama, /models all)")
         table.add_row("/use <name>", "Switch active model (e.g. /use gemini-2.5-flash)")
         table.add_row("/mode [chat|agent]", "Toggle or set assistant mode (chat vs agent)")
         table.add_row("/tools [cat] [off|ask|auto]", "Tool policy: OFF, ASK (Confirm with User), or AUTO (Full Control)")
@@ -209,42 +211,230 @@ class InteractiveCLI:
         table.add_row("/exit, /quit", "Exit session (auto-summarizes unless empty)")
         self.console.print(table)
 
-    async def handle_models_command(self) -> None:
-        """Fetch and display available models."""
-        prov_name = self.assistant.provider.name
-        with self.console.status(f"[bold green]Fetching models from {prov_name}..."):
+    def _save_env_key(self, key: str, value: str) -> None:
+        """Persist environment variable to .env file in workspace."""
+        env_path = os.path.join(os.getcwd(), ".env")
+        try:
+            lines = []
+            found = False
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            new_lines = []
+            for line in lines:
+                if line.strip().startswith(f"{key}=") or line.strip().startswith(f"export {key}="):
+                    new_lines.append(f"{key}={value}\n")
+                    found = True
+                else:
+                    new_lines.append(line)
+            if not found:
+                if new_lines and not new_lines[-1].endswith("\n"):
+                    new_lines.append("\n")
+                new_lines.append(f"{key}={value}\n")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            self.console.print(f"[dim]Persisted {key} to {env_path}[/dim]")
+        except Exception as e:
+            self.console.print(f"[dim yellow]Notice: Could not persist to .env: {e}[/dim yellow]")
+
+    async def handle_provider_command(self, arg: str) -> None:
+        """Switch or configure the active LLM provider."""
+        tokens = arg.strip().split()
+        if not tokens or not tokens[0]:
+            # Show current provider details & usage
+            prov_name = self.assistant.provider.name
+            key_info = ""
+            if prov_name == "Gemini":
+                key_info = f" (Key: ...{self.assistant.config.gemini_api_key[-6:]})" if self.assistant.config.gemini_api_key else " (No Key)"
+            elif prov_name == "Ollama":
+                key_info = f" ({self.assistant.config.ollama_host})"
+
+            self.console.print(
+                f"[bold cyan]Current Provider:[/bold cyan] [bold green]{prov_name}[/bold green]{key_info}\n"
+                f"[bold cyan]Active Model:[/bold cyan] [bold white]{self.assistant.active_model}[/bold white]\n\n"
+                f"[dim]Commands:[/dim]\n"
+                f"  [yellow]/provider gemini [api_key][/yellow]  - Switch to Google Gemini\n"
+                f"  [yellow]/provider ollama[/yellow]             - Switch to Ollama local runtime\n"
+                f"  [yellow]/providers[/yellow]                   - Inspect all supported providers\n"
+                f"  [yellow]/models [provider|all][/yellow]       - View models (e.g. /models gemini, /models all)\n"
+            )
+            return
+
+        target_provider = tokens[0].lower()
+        api_key = tokens[1] if len(tokens) > 1 else None
+
+        if target_provider == "gemini" and not api_key and not self.assistant.config.gemini_api_key:
+            self.console.print("[yellow]Gemini API key is not currently configured.[/yellow]")
             try:
-                models = await self.assistant.list_available_models()
+                key_session = PromptSession(multiline=False)
+                entered_key = await key_session.prompt_async(HTML("<ansiyellow>Enter Gemini API Key: </ansiyellow>"))
+                entered_key = entered_key.strip()
+                if entered_key:
+                    api_key = entered_key
+                else:
+                    self.console.print("[bold red]No API key provided. Provider switch aborted.[/bold red]")
+                    return
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("[dim]Cancelled.[/dim]")
+                return
+
+        with self.console.status(f"[bold green]Switching to {target_provider.capitalize()}..."):
+            success, msg = self.assistant.switch_provider(target_provider, api_key=api_key)
+
+        if not success:
+            self.console.print(f"[bold red]Failed to switch provider:[/bold red] {msg}\n")
+            return
+
+        # If key was passed, persist to .env
+        if api_key and target_provider == "gemini":
+            self._save_env_key("GEMINI_API_KEY", api_key)
+
+        # Verify connectivity
+        with self.console.status(f"[bold green]Verifying {self.assistant.provider.name} connectivity..."):
+            healthy = await self.assistant.verify_provider_health()
+
+        if healthy:
+            self.console.print(f"[bold green]✓ Successfully connected to {self.assistant.provider.name}![/bold green]")
+            self.console.print(f"[dim]Active Model:[/dim] [bold cyan]{self.assistant.active_model}[/bold cyan]")
+            self.console.print(f"[dim]Tip: Use [bold white]/models[/bold white] to view available models, or [bold white]/use <model>[/bold white] to change.[/dim]\n")
+        else:
+            self.console.print(f"[bold yellow]⚠️  Switched to {self.assistant.provider.name}, but health check failed.[/bold yellow]")
+            if target_provider == "gemini":
+                self.console.print("[yellow]Please verify your Gemini API key and network connection.[/yellow]\n")
+            else:
+                self.console.print(f"[yellow]Is Ollama running at {self.assistant.config.ollama_host}?[/yellow]\n")
+
+    async def handle_providers_command(self) -> None:
+        """Display summary table of all known providers."""
+        table = Table(title="Configured LLM Providers", box=ROUNDED, header_style="bold cyan")
+        table.add_column("Status", justify="center", width=12)
+        table.add_column("Provider", style="bold white")
+        table.add_column("Target / Endpoint")
+        table.add_column("Default Model")
+        table.add_column("Auth / Key")
+        table.add_column("Switch Command", style="yellow")
+
+        # Check Ollama
+        is_ollama_active = self.assistant.provider.name == "Ollama"
+        ollama_status = "[bold green]ACTIVE[/bold green]" if is_ollama_active else "[green]AVAILABLE[/green]"
+        table.add_row(
+            ollama_status,
+            "Ollama",
+            self.assistant.config.ollama_host,
+            os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.2:latest"),
+            "Local (No Key)",
+            "/provider ollama",
+        )
+
+        # Check Gemini
+        is_gemini_active = self.assistant.provider.name == "Gemini"
+        has_gemini_key = bool(self.assistant.config.gemini_api_key)
+        if is_gemini_active:
+            gemini_status = "[bold green]ACTIVE[/bold green]"
+        elif has_gemini_key:
+            gemini_status = "[green]CONFIGURED[/green]"
+        else:
+            gemini_status = "[yellow]KEY MISSING[/yellow]"
+        gemini_key_preview = f"...{self.assistant.config.gemini_api_key[-6:]}" if has_gemini_key else "Not Set"
+        table.add_row(
+            gemini_status,
+            "Google Gemini",
+            "generativelanguage.googleapis.com",
+            self.assistant.config.gemini_default_model,
+            gemini_key_preview,
+            "/provider gemini",
+        )
+
+        self.console.print(table)
+        self.console.print("[dim]Use [bold cyan]/provider <name>[/bold cyan] to switch, or [bold cyan]/models all[/bold cyan] to view models across providers.[/dim]\n")
+
+    async def handle_models_command(self, arg: str = "") -> None:
+        """Fetch and display available models for current, specified, or all providers."""
+        target = arg.strip().lower()
+
+        if target == "all":
+            with self.console.status("[bold green]Fetching models from all providers..."):
+                all_results = await self.assistant.list_models_all_providers()
+
+            table = Table(title="Available Models Across Providers", box=ROUNDED, header_style="bold cyan")
+            table.add_column("Provider", style="bold yellow")
+            table.add_column("Status", justify="center", width=8)
+            table.add_column("Model Name", style="bold white")
+            table.add_column("Size / Source", justify="right")
+            table.add_column("Family")
+            table.add_column("Description / Params")
+
+            for prov_name, data in all_results.items():
+                err = data.get("error")
+                models = data.get("models", [])
+                is_prov_active = data.get("active", False)
+                if err:
+                    table.add_row(
+                        prov_name,
+                        "[red]ERROR[/red]",
+                        f"[dim red]{err}[/dim red]",
+                        "-",
+                        "-",
+                        f"[dim]Endpoint: {data.get('endpoint', '-')}[/dim]",
+                    )
+                    continue
+
+                for m in models:
+                    is_active = is_prov_active and (m.name == self.assistant.active_model)
+                    status = "[bold green]ACTIVE[/bold green]" if is_active else ""
+                    size_label = f"{m.size_gb} GB" if m.size_bytes > 0 else "Cloud API"
+                    table.add_row(
+                        prov_name,
+                        status,
+                        f"[green]{m.name}[/green]" if is_active else m.name,
+                        size_label,
+                        m.family or "-",
+                        m.parameter_size or "-",
+                    )
+
+            self.console.print(table)
+            self.console.print(f"[dim]Use [bold cyan]/use <model>[/bold cyan] or [bold cyan]/provider <name>[/bold cyan] to switch.[/dim]\n")
+            return
+
+        # Query a specific provider or current provider
+        query_prov = target if target in ("gemini", "ollama", "openai", "openai_compatible") else None
+        prov_display = query_prov.capitalize() if query_prov else self.assistant.provider.name
+
+        with self.console.status(f"[bold green]Fetching models from {prov_display}..."):
+            try:
+                models = await self.assistant.list_available_models(provider_name=query_prov)
             except Exception as e:
-                self.console.print(f"[bold red]Error fetching models:[/bold red] {e}")
+                self.console.print(f"[bold red]Error fetching models from {prov_display}:[/bold red] {e}\n")
                 return
 
         if not models:
-            self.console.print(f"[yellow]No models found in {prov_name}.[/yellow]")
+            self.console.print(f"[yellow]No models found in {prov_display}.[/yellow]\n")
             return
 
-        table = Table(title=f"Available Models in {prov_name}", box=ROUNDED, header_style="bold cyan")
+        table = Table(title=f"Available Models in {prov_display}", box=ROUNDED, header_style="bold cyan")
         table.add_column("Status", justify="center", width=8)
         table.add_column("Model Name", style="bold white")
-        table.add_column("Size", justify="right")
+        table.add_column("Size / Source", justify="right")
         table.add_column("Family")
-        table.add_column("Params", justify="right")
-        table.add_column("Quant")
+        table.add_column("Description / Params")
 
         for m in models:
-            is_active = m.name == self.assistant.active_model
+            is_active = (prov_display.lower() == self.assistant.provider.name.lower()) and (m.name == self.assistant.active_model)
             status = "[bold green]ACTIVE[/bold green]" if is_active else ""
+            size_label = f"{m.size_gb} GB" if m.size_bytes > 0 else "Cloud API"
             table.add_row(
                 status,
                 f"[green]{m.name}[/green]" if is_active else m.name,
-                f"{m.size_gb} GB",
+                size_label,
                 m.family or "-",
                 m.parameter_size or "-",
-                m.quantization or "-",
             )
 
         self.console.print(table)
-        self.console.print(f"[dim]Use [bold cyan]/use <model>[/bold cyan] to switch.[/dim]\n")
+        self.console.print(
+            f"[dim]Use [bold cyan]/use <model>[/bold cyan] to switch models, "
+            f"or [bold cyan]/models all[/bold cyan] to view models across all providers.[/dim]\n"
+        )
 
     async def handle_persona_command(self, arg: str) -> None:
         """View, reload, adapt, or reset personality.md."""
@@ -1100,16 +1290,42 @@ class InteractiveCLI:
                 self.handle_new_session_command(arg)
                 return True
 
+            elif command in ("/provider", "/prov"):
+                await self.handle_provider_command(arg)
+                return True
+
+            elif command in ("/providers", "/provs"):
+                await self.handle_providers_command()
+                return True
+
             elif command == "/models":
-                await self.handle_models_command()
+                await self.handle_models_command(arg)
                 return True
 
             elif command in ("/use", "/model"):
                 if not arg:
                     self.console.print("[yellow]Usage: /use <model_name>[/yellow]")
                     return True
-                self.assistant.set_model(arg)
-                self.console.print(f"[bold green]Switched active model to:[/bold green] {arg}\n")
+                target_model = arg.strip()
+                # Auto-switch to Gemini if user specifies a Gemini model while on another provider
+                if "gemini" in target_model.lower() and self.assistant.provider.name != "Gemini":
+                    self.console.print(f"[cyan]Detected Gemini model '{target_model}'. Switching provider to Google Gemini...[/cyan]")
+                    success, msg = self.assistant.switch_provider("gemini", model=target_model)
+                    if success:
+                        self.console.print(f"[bold green]✓ Switched provider to Gemini and active model to:[/bold green] {target_model}\n")
+                        return True
+                    else:
+                        self.console.print(f"[bold red]Could not switch to Gemini:[/bold red] {msg}\n")
+                        return True
+                # Auto-switch to Ollama if user specifies an Ollama model while on Gemini
+                elif not any(k in target_model.lower() for k in ("gemini", "gemma-4")) and self.assistant.provider.name == "Gemini":
+                    self.console.print(f"[cyan]Switching provider to Ollama for model '{target_model}'...[/cyan]")
+                    success, msg = self.assistant.switch_provider("ollama", model=target_model)
+                    if success:
+                        self.console.print(f"[bold green]✓ Switched provider to Ollama and active model to:[/bold green] {target_model}\n")
+                        return True
+                self.assistant.set_model(target_model)
+                self.console.print(f"[bold green]Switched active model to:[/bold green] {target_model}\n")
                 return True
 
             elif command == "/mode":

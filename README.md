@@ -132,9 +132,14 @@ Launch Finch directly in your terminal with rich streaming output, markdown rend
 # Start interactive CLI session (default Ollama model)
 python -m finch.cli
 
-# Launch with Google Gemini or OpenAI-compatible backends
+# Launch with Google Gemini
 python -m finch.cli --provider gemini --model gemini-2.5-flash
+
+# Launch with OpenAI (cloud)
 python -m finch.cli --provider openai --model gpt-4o-mini
+
+# Launch with any OpenAI-compatible local or cloud server (e.g. vLLM, LM Studio, Groq, DeepSeek)
+python -m finch.cli --provider openai --base-url http://localhost:1234/v1 --model local-model
 
 # Start directly in Autonomous Agent Mode
 python -m finch.cli --mode agent
@@ -144,6 +149,28 @@ python -m finch.cli -q "Analyze the current workspace architecture."
 ```
 
 *(Note: `python main.py` remains available as an alias.)*
+
+---
+
+## Multi-Provider LLM Inference & Dynamic Switching
+
+Finch provides unified streaming inference, tool calling, and live telemetry across three major provider backends:
+
+| Provider | Target Runtime | Configuration / Auth | Dynamic Switch Command |
+| :--- | :--- | :--- | :--- |
+| **Ollama** | Local LLMs (`llama3.2`, `qwen2.5`, `mistral`, etc.) | `OLLAMA_HOST=http://localhost:11434` (no key required) | `/provider ollama [host]` |
+| **Google Gemini** | Cloud Gemini (`gemini-2.5-flash`, `gemini-2.5-pro`) | `GEMINI_API_KEY=...` | `/provider gemini [api_key]` |
+| **OpenAI-Compatible** | Any OpenAI spec server (vLLM, LM Studio, Ollama `/v1`, LocalAI, Groq, Together, OpenRouter, DeepSeek) | `OPENAI_BASE_URL=...`<br/>`OPENAI_API_KEY=...` (optional for local) | `/provider openai [api_key] [base_url]` |
+
+### Provider Highlights:
+- **Unified Model Visibility**:
+  - `/models` — Inspect models available from the currently active provider.
+  - `/models <provider>` — Inspect models from a specific provider (`/models openai`, `/models gemini`, `/models ollama`).
+  - `/models all` — Concurrently query and aggregate all available models across all configured providers.
+  - `/use <model>` — Switch active model with intelligent auto-provider switching (e.g., `/use gpt-4o` switches to the OpenAI-compatible runtime).
+- **Streaming Telemetry & Reasoning**: Real-time TTFT (Time-to-First-Token), tokens/sec throughput, and reasoning/thinking stream extraction (e.g., DeepSeek-R1 or Qwen thinking models).
+- **Function Calling**: Autonomous multi-turn and single-hop tool execution supported across providers.
+- **Provider Status Overview**: `/providers` renders a table displaying active runtime, endpoint, default model, and credential states.
 
 ---
 
@@ -201,9 +228,9 @@ Inside an active CLI session, use slash commands to inspect state, adjust guardr
 | **`/mode`** | `/mode [chat\|agent]` | Switch between single-turn Chat mode and autonomous multi-turn Agent mode. |
 | **`/persona`** | `/persona [reload\|adapt\|edit]` | Inspect, evolve, or reload system prompt rules from `personality.md`. |
 | **`/compress`** | `/compress [on\|off\|stats]` | Toggle Headroom context compression and view token reduction percentages. |
-| **`/provider`** | `/provider [gemini\|ollama] [key]` | Inspect current provider, dynamically switch runtime, or configure API key. |
-| **`/providers`** | `/providers` | Table of all configured inference providers, endpoints, and health status. |
-| **`/models`** | `/models [provider\|all]` / `/use <model>` | View models for current, specific, or all providers, or switch active model. |
+| **`/provider`** | `/provider [name] [key] [url]` | Inspect current provider, dynamically switch runtime (`ollama\|gemini\|openai`), or configure endpoint/key. |
+| **`/providers`** | `/providers` | Table of all configured inference providers (Ollama, Gemini, OpenAI-Compatible), endpoints, and health status. |
+| **`/models`** | `/models [provider\|all]` / `/use <model>` | View models for current, specific (`gemini\|ollama\|openai`), or all providers, or switch active model. |
 | **`/export`** | `/export <md\|html\|bundle>` | Export session as GitHub-flavored Markdown, styled HTML, or backup zip. |
 | **`/help`** | `/help` | Print the full interactive command reference manual. |
 

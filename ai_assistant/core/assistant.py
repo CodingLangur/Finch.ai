@@ -445,8 +445,10 @@ class AIAssistant:
 
             if model:
                 self.active_model = model.strip()
-            else:
-                self.active_model = self.config.openai_default_model
+            elif any(k in self.active_model.lower() for k in ("gemini", "llama", "gemma")):
+                self.active_model = self.config.openai_default_model or "gpt-4o-mini"
+            elif not self.active_model:
+                self.active_model = self.config.openai_default_model or "gpt-4o-mini"
 
             return True, f"Switched to OpenAI-compatible provider (Active Model: {self.active_model})"
 
@@ -629,12 +631,16 @@ class AIAssistant:
             )
             return await prov.list_models()
 
-        elif prov_key in ("openai", "openai_compatible"):
-            prov = OpenAICompatibleProvider(
-                api_key=self.config.openai_api_key,
-                base_url=self.config.openai_base_url,
-                timeout=self.config.request_timeout,
-                default_model=self.config.openai_default_model,
+        elif prov_key in ("openai", "openai_compatible", "compatible"):
+            prov = (
+                self.provider
+                if self.provider.name in ("OpenAI-Compatible", "OpenAI")
+                else OpenAICompatibleProvider(
+                    api_key=self.config.openai_api_key,
+                    base_url=self.config.openai_base_url,
+                    timeout=self.config.request_timeout,
+                    default_model=self.config.openai_default_model,
+                )
             )
             return await prov.list_models()
 
@@ -695,6 +701,46 @@ class AIAssistant:
                 "error": str(e),
                 "active": self.provider.name == "Gemini",
                 "endpoint": "generativelanguage.googleapis.com",
+            }
+
+        # 3. OpenAI-Compatible
+        try:
+            is_openai_active = self.provider.name in ("OpenAI-Compatible", "OpenAI")
+            has_key = bool(self.config.openai_api_key)
+            base_url = self.config.openai_base_url or "https://api.openai.com/v1"
+            is_local = any(h in base_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+
+            if not has_key and not is_local and "api.openai.com" in base_url:
+                results["OpenAI-Compatible"] = {
+                    "models": [],
+                    "error": "API key not configured",
+                    "active": is_openai_active,
+                    "endpoint": base_url,
+                }
+            else:
+                openai_prov = (
+                    self.provider
+                    if is_openai_active
+                    else OpenAICompatibleProvider(
+                        api_key=self.config.openai_api_key,
+                        base_url=base_url,
+                        timeout=10.0,
+                        default_model=self.config.openai_default_model,
+                    )
+                )
+                openai_models = await openai_prov.list_models()
+                results["OpenAI-Compatible"] = {
+                    "models": openai_models,
+                    "error": None,
+                    "active": is_openai_active,
+                    "endpoint": base_url,
+                }
+        except Exception as e:
+            results["OpenAI-Compatible"] = {
+                "models": [],
+                "error": str(e),
+                "active": self.provider.name in ("OpenAI-Compatible", "OpenAI"),
+                "endpoint": self.config.openai_base_url or "https://api.openai.com/v1",
             }
 
         return results

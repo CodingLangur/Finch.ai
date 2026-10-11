@@ -61,6 +61,19 @@ class TestCLIProviderCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.assistant.provider.name, "Gemini")
         self.assertEqual(self.assistant.active_model, "gemini-2.5-flash")
 
+    async def test_handle_provider_switch_to_openai(self):
+        with patch.object(self.assistant, "verify_provider_health", AsyncMock(return_value=True)):
+            await self.cli.handle_provider_command("openai sk-test-key")
+            self.assertEqual(self.assistant.provider.name, "OpenAI-Compatible")
+            self.assertEqual(self.assistant.active_model, "gpt-4o-mini")
+
+    async def test_handle_input_use_openai_model_autoswitches_provider(self):
+        self.assertEqual(self.assistant.provider.name, "Ollama")
+        handled = await self.cli.handle_input("/use gpt-4o")
+        self.assertTrue(handled)
+        self.assertEqual(self.assistant.provider.name, "OpenAI-Compatible")
+        self.assertEqual(self.assistant.active_model, "gpt-4o")
+
 
 if __name__ == "__main__":
     unittest.main()

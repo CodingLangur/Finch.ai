@@ -51,7 +51,15 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 res = await client.get(url, headers=self._get_headers())
-                return res.status_code == 200
+                if res.status_code == 200:
+                    return True
+                # Fallback to /v1/models if base_url did not include /v1
+                if res.status_code == 404 and not self.base_url.endswith("/v1"):
+                    res_v1 = await client.get(f"{self.base_url}/v1/models", headers=self._get_headers())
+                    if res_v1.status_code == 200:
+                        self.base_url = f"{self.base_url}/v1"
+                        return True
+                return False
         except Exception:
             return False
 
@@ -61,19 +69,36 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 res = await client.get(url, headers=self._get_headers())
+                if res.status_code == 404 and not self.base_url.endswith("/v1"):
+                    res_v1 = await client.get(f"{self.base_url}/v1/models", headers=self._get_headers())
+                    if res_v1.status_code == 200:
+                        self.base_url = f"{self.base_url}/v1"
+                        res = res_v1
                 res.raise_for_status()
                 data = res.json()
                 models: List[ModelInfo] = []
-                for item in data.get("data", []):
-                    model_id = item.get("id", "")
-                    if model_id:
-                        models.append(
-                            ModelInfo(
-                                name=model_id,
-                                family=item.get("owned_by", "OpenAI-Compatible"),
-                                modified_at=str(item.get("created", "")),
+                raw_list = []
+                if isinstance(data, list):
+                    raw_list = data
+                elif isinstance(data, dict):
+                    if isinstance(data.get("data"), list):
+                        raw_list = data["data"]
+                    elif isinstance(data.get("models"), list):
+                        raw_list = data["models"]
+
+                for item in raw_list:
+                    if isinstance(item, str):
+                        models.append(ModelInfo(name=item, family="OpenAI-Compatible"))
+                    elif isinstance(item, dict):
+                        model_id = item.get("id") or item.get("name", "")
+                        if model_id:
+                            models.append(
+                                ModelInfo(
+                                    name=model_id,
+                                    family=item.get("owned_by") or item.get("family") or "OpenAI-Compatible",
+                                    modified_at=str(item.get("created", "")),
+                                )
                             )
-                        )
                 # Sort alphabetically by name
                 models.sort(key=lambda m: m.name)
                 return models
@@ -149,28 +174,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
-                # Attempt with stream_options first
-                response = await client.post(url, headers=headers, json=payload)
-                if response.status_code == 400 and "stream_options" in response.text:
-                    # Fallback for servers that reject stream_options
-                    payload.pop("stream_options", None)
-                    response = await client.post(url, headers=headers, json=payload)
-
-                if response.status_code != 200:
-                    error_bytes = response.content
-                    error_msg = error_bytes.decode("utf-8", errors="ignore")
-                    raise RuntimeError(
-                        f"OpenAI-compatible API at {self.base_url} returned HTTP {response.status_code}: {error_msg}"
-                    )
-
-                # Stream response lines
-                async with client.stream("POST", url, headers=headers, json=payload) as stream_resp:
-                    if stream_resp.status_code != 200:
-                        err = await stream_resp.aread()
-                        raise RuntimeError(
-                            f"OpenAI-compatible API returned HTTP {stream_resp.status_code}: {err.decode('utf-8', errors='ignore')}"
-                        )
-
+                async def _consume_stream(stream_resp):
+                    nonlocal first_token_time, total_eval_tokens, total_prompt_tokens
                     async for line in stream_resp.aiter_lines():
                         if not line:
                             continue
@@ -208,6 +213,17 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                             or ""
                         )
                         raw_tool_deltas = delta_dict.get("tool_calls") or []
+                        raw_fc = delta_dict.get("function_call")
+                        if raw_fc and not raw_tool_deltas:
+                            raw_tool_deltas = [{"index": 0, "id": "call_0", "function": raw_fc}]
+
+                        # Fallback for choices with message instead of delta
+                        if not delta_text and not thinking_text:
+                            msg_obj = choice.get("message", {})
+                            if msg_obj.get("content"):
+                                delta_text = msg_obj.get("content")
+                            if not raw_tool_deltas and msg_obj.get("tool_calls"):
+                                raw_tool_deltas = msg_obj["tool_calls"]
 
                         if (delta_text or thinking_text or raw_tool_deltas) and first_token_time is None:
                             first_token_time = time.perf_counter()
@@ -232,8 +248,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                                     accumulated_tools[idx]["name"] += tc["function"]["name"]
 
                             arg_chunk = tc.get("function", {}).get("arguments", "")
-                            if arg_chunk:
-                                accumulated_tools[idx]["arguments"] += arg_chunk
+                            if isinstance(arg_chunk, dict):
+                                accumulated_tools[idx]["arguments"] = json.dumps(arg_chunk)
+                            elif arg_chunk:
+                                accumulated_tools[idx]["arguments"] += str(arg_chunk)
 
                         finish_reason = choice.get("finish_reason")
                         if finish_reason:
@@ -247,6 +265,33 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                                 thinking_delta=thinking_text,
                                 is_done=False,
                             )
+
+                # Connect and stream
+                need_fallback_retry = False
+                async with client.stream("POST", url, headers=headers, json=payload) as stream_resp:
+                    if stream_resp.status_code == 400 and "stream_options" in payload:
+                        err_b = await stream_resp.aread() if hasattr(stream_resp, "aread") else b""
+                        if b"stream_options" in err_b:
+                            need_fallback_retry = True
+                    elif stream_resp.status_code != 200:
+                        err = await stream_resp.aread() if hasattr(stream_resp, "aread") else b""
+                        raise RuntimeError(
+                            f"OpenAI-compatible API at {self.base_url} returned HTTP {stream_resp.status_code}: {err.decode('utf-8', errors='ignore')}"
+                        )
+                    else:
+                        async for chunk in _consume_stream(stream_resp):
+                            yield chunk
+
+                if need_fallback_retry:
+                    payload.pop("stream_options", None)
+                    async with client.stream("POST", url, headers=headers, json=payload) as stream_resp:
+                        if stream_resp.status_code != 200:
+                            err = await stream_resp.aread() if hasattr(stream_resp, "aread") else b""
+                            raise RuntimeError(
+                                f"OpenAI-compatible API at {self.base_url} returned HTTP {stream_resp.status_code}: {err.decode('utf-8', errors='ignore')}"
+                            )
+                        async for chunk in _consume_stream(stream_resp):
+                            yield chunk
 
             except httpx.ConnectError as e:
                 raise ConnectionError(

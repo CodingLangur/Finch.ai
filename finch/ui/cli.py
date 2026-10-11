@@ -147,6 +147,9 @@ class InteractiveCLI:
         if self.assistant.provider.name == "Gemini":
             key_suffix = f"...{self.assistant.config.gemini_api_key[-6:]}" if self.assistant.config.gemini_api_key else "Not Set"
             provider_desc = f"Google Gemini (Key: {key_suffix})"
+        elif self.assistant.provider.name in ("OpenAI-Compatible", "OpenAI"):
+            key_suffix = f"...{self.assistant.config.openai_api_key[-6:]}" if self.assistant.config.openai_api_key else "No Key"
+            provider_desc = f"OpenAI-Compatible ({self.assistant.config.openai_base_url}, Key: {key_suffix})"
         else:
             provider_desc = f"{self.assistant.provider.name} ({self.assistant.config.ollama_host})"
 
@@ -187,7 +190,7 @@ class InteractiveCLI:
         table.add_row("/hybrid <query>", "Semantic & Hybrid Search combining FTS5 and sqlite-vec (RRF)")
         table.add_row("/transcript [id]", "View full dialogue transcript for an identified session")
         table.add_row("/new [title]", "Start a fresh session and clear in-memory context")
-        table.add_row("/provider [name] [key]", "View current provider, switch (ollama|gemini), or configure API key")
+        table.add_row("/provider [name] [key] [url]", "View current provider, switch (ollama|gemini|openai), or configure endpoint/key")
         table.add_row("/providers", "List all supported providers, endpoints, and statuses")
         table.add_row("/models [provider|all]", "List available models (e.g. /models gemini, /models ollama, /models all)")
         table.add_row("/use <name>", "Switch active model (e.g. /use gemini-2.5-flash)")
@@ -248,20 +251,78 @@ class InteractiveCLI:
                 key_info = f" (Key: ...{self.assistant.config.gemini_api_key[-6:]})" if self.assistant.config.gemini_api_key else " (No Key)"
             elif prov_name == "Ollama":
                 key_info = f" ({self.assistant.config.ollama_host})"
+            elif prov_name in ("OpenAI", "OpenAI-Compatible"):
+                key_suffix = f" (Key: ...{self.assistant.config.openai_api_key[-6:]})" if self.assistant.config.openai_api_key else " (No Key)"
+                key_info = f" ({self.assistant.config.openai_base_url}){key_suffix}"
 
             self.console.print(
                 f"[bold cyan]Current Provider:[/bold cyan] [bold green]{prov_name}[/bold green]{key_info}\n"
                 f"[bold cyan]Active Model:[/bold cyan] [bold white]{self.assistant.active_model}[/bold white]\n\n"
                 f"[dim]Commands:[/dim]\n"
-                f"  [yellow]/provider gemini [api_key][/yellow]  - Switch to Google Gemini\n"
-                f"  [yellow]/provider ollama[/yellow]             - Switch to Ollama local runtime\n"
-                f"  [yellow]/providers[/yellow]                   - Inspect all supported providers\n"
-                f"  [yellow]/models [provider|all][/yellow]       - View models (e.g. /models gemini, /models all)\n"
+                f"  [yellow]/provider gemini [api_key][/yellow]             - Switch to Google Gemini\n"
+                f"  [yellow]/provider ollama [host][/yellow]                 - Switch to Ollama local runtime\n"
+                f"  [yellow]/provider openai [api_key] [base_url][/yellow]   - Switch to OpenAI or compatible API\n"
+                f"  [yellow]/providers[/yellow]                              - Inspect all supported providers\n"
+                f"  [yellow]/models [provider|all][/yellow]                  - View models (e.g. /models gemini, /models openai, /models all)\n"
             )
             return
 
         target_provider = tokens[0].lower()
         api_key = tokens[1] if len(tokens) > 1 else None
+
+        if target_provider in ("openai", "openai_compatible", "compatible"):
+            base_url = None
+            model = None
+            api_key = None
+            for tok in tokens[1:]:
+                if tok.startswith("http://") or tok.startswith("https://"):
+                    base_url = tok
+                elif tok.startswith("sk-") or (api_key is None and not self.assistant.config.openai_api_key):
+                    api_key = tok
+                elif model is None:
+                    model = tok
+
+            active_url = base_url or self.assistant.config.openai_base_url or "https://api.openai.com/v1"
+            is_local = any(h in active_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+
+            if not api_key and not self.assistant.config.openai_api_key and not is_local:
+                self.console.print("[yellow]OpenAI API key is not currently configured.[/yellow]")
+                try:
+                    key_session = PromptSession(multiline=False)
+                    entered_key = await key_session.prompt_async(HTML("<ansiyellow>Enter OpenAI API Key (or press Enter to skip): </ansiyellow>"))
+                    entered_key = entered_key.strip()
+                    if entered_key:
+                        api_key = entered_key
+                except (KeyboardInterrupt, EOFError):
+                    self.console.print("[dim]Cancelled.[/dim]")
+                    return
+
+            with self.console.status("[bold green]Switching to OpenAI-compatible provider..."):
+                success, msg = self.assistant.switch_provider(
+                    target_provider, api_key=api_key, base_url=base_url, model=model
+                )
+
+            if not success:
+                self.console.print(f"[bold red]Failed to switch provider:[/bold red] {msg}\n")
+                return
+
+            if api_key:
+                self._save_env_key("OPENAI_API_KEY", api_key)
+            if base_url:
+                self._save_env_key("OPENAI_BASE_URL", base_url)
+
+            # Verify connectivity
+            with self.console.status(f"[bold green]Verifying {self.assistant.provider.name} connectivity..."):
+                healthy = await self.assistant.verify_provider_health()
+
+            if healthy:
+                self.console.print(f"[bold green]✓ Successfully connected to {self.assistant.provider.name}![/bold green]")
+                self.console.print(f"[dim]Active Model:[/dim] [bold cyan]{self.assistant.active_model}[/bold cyan]")
+                self.console.print(f"[dim]Tip: Use [bold white]/models[/bold white] to view available models, or [bold white]/use <model>[/bold white] to change.[/dim]\n")
+            else:
+                self.console.print(f"[bold yellow]⚠️  Switched to {self.assistant.provider.name}, but health check failed.[/bold yellow]")
+                self.console.print(f"[yellow]Please verify that the server at {self.assistant.config.openai_base_url} is reachable and your API key is correct.[/yellow]\n")
+            return
 
         if target_provider == "gemini" and not api_key and not self.assistant.config.gemini_api_key:
             self.console.print("[yellow]Gemini API key is not currently configured.[/yellow]")
@@ -343,6 +404,27 @@ class InteractiveCLI:
             self.assistant.config.gemini_default_model,
             gemini_key_preview,
             "/provider gemini",
+        )
+
+        # Check OpenAI-Compatible
+        is_openai_active = self.assistant.provider.name in ("OpenAI-Compatible", "OpenAI")
+        has_openai_key = bool(self.assistant.config.openai_api_key)
+        openai_url = self.assistant.config.openai_base_url or "https://api.openai.com/v1"
+        is_local = any(h in openai_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+        if is_openai_active:
+            openai_status = "[bold green]ACTIVE[/bold green]"
+        elif has_openai_key or is_local:
+            openai_status = "[green]CONFIGURED[/green]"
+        else:
+            openai_status = "[yellow]KEY MISSING[/yellow]"
+        openai_key_preview = f"...{self.assistant.config.openai_api_key[-6:]}" if has_openai_key else ("Local (No Key)" if is_local else "Not Set")
+        table.add_row(
+            openai_status,
+            "OpenAI-Compatible",
+            openai_url,
+            self.assistant.config.openai_default_model,
+            openai_key_preview,
+            "/provider openai",
         )
 
         self.console.print(table)
@@ -1317,8 +1399,18 @@ class InteractiveCLI:
                     else:
                         self.console.print(f"[bold red]Could not switch to Gemini:[/bold red] {msg}\n")
                         return True
+                # Auto-switch to OpenAI if user specifies an OpenAI model while on another provider
+                elif any(target_model.lower().startswith(p) for p in ("gpt-", "o1-", "o3-", "chatgpt-")) and self.assistant.provider.name not in ("OpenAI-Compatible", "OpenAI"):
+                    self.console.print(f"[cyan]Detected OpenAI model '{target_model}'. Switching provider to OpenAI-compatible...[/cyan]")
+                    success, msg = self.assistant.switch_provider("openai", model=target_model)
+                    if success:
+                        self.console.print(f"[bold green]✓ Switched provider to OpenAI-compatible and active model to:[/bold green] {target_model}\n")
+                        return True
+                    else:
+                        self.console.print(f"[bold red]Could not switch to OpenAI:[/bold red] {msg}\n")
+                        return True
                 # Auto-switch to Ollama if user specifies an Ollama model while on Gemini
-                elif not any(k in target_model.lower() for k in ("gemini", "gemma-4")) and self.assistant.provider.name == "Gemini":
+                elif not any(k in target_model.lower() for k in ("gemini", "gemma-4", "gpt-", "o1-", "o3-")) and self.assistant.provider.name == "Gemini":
                     self.console.print(f"[cyan]Switching provider to Ollama for model '{target_model}'...[/cyan]")
                     success, msg = self.assistant.switch_provider("ollama", model=target_model)
                     if success:

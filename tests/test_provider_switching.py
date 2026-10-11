@@ -9,12 +9,17 @@ from ai_assistant.providers.gemini_provider import GeminiProvider
 from ai_assistant.providers.ollama_provider import OllamaProvider
 
 
+from ai_assistant.providers.openai_provider import OpenAICompatibleProvider
+
+
 class TestProviderSwitching(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.config = AppConfig(
             provider="ollama",
             gemini_api_key="AQ.test_key_12345678",
             gemini_default_model="gemini-2.5-flash",
+            openai_api_key="sk-test_key_openai",
+            openai_default_model="gpt-4o-mini",
         )
         self.assistant = AIAssistant(config=self.config)
 
@@ -51,6 +56,25 @@ class TestProviderSwitching(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.assistant.provider.name, "Ollama")
         self.assertNotIn("gemini", self.assistant.active_model.lower())
 
+    def test_switch_to_openai_compatible(self):
+        success, msg = self.assistant.switch_provider(
+            "openai_compatible",
+            api_key="sk-new-key-123",
+            base_url="http://localhost:8000/v1",
+            model="qwen2.5:7b",
+        )
+        self.assertTrue(success)
+        self.assertEqual(self.assistant.provider.name, "OpenAI-Compatible")
+        self.assertEqual(self.assistant.provider.api_key, "sk-new-key-123")
+        self.assertEqual(self.assistant.config.openai_base_url, "http://localhost:8000/v1")
+        self.assertEqual(self.assistant.active_model, "qwen2.5:7b")
+
+    def test_switch_to_openai_defaults(self):
+        success, msg = self.assistant.switch_provider("openai")
+        self.assertTrue(success)
+        self.assertEqual(self.assistant.provider.name, "OpenAI-Compatible")
+        self.assertEqual(self.assistant.active_model, "gpt-4o-mini")
+
     async def test_list_available_models_by_provider(self):
         mock_gemini_models = [
             ModelInfo(name="gemini-2.5-flash", family="Gemini"),
@@ -61,17 +85,31 @@ class TestProviderSwitching(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(models), 2)
             self.assertEqual(models[0].name, "gemini-2.5-flash")
 
+    async def test_list_available_models_openai(self):
+        mock_openai_models = [
+            ModelInfo(name="gpt-4o", family="OpenAI-Compatible"),
+            ModelInfo(name="gpt-4o-mini", family="OpenAI-Compatible"),
+        ]
+        with patch.object(OpenAICompatibleProvider, "list_models", AsyncMock(return_value=mock_openai_models)):
+            models = await self.assistant.list_available_models(provider_name="openai")
+            self.assertEqual(len(models), 2)
+            self.assertEqual(models[0].name, "gpt-4o")
+
     async def test_list_models_all_providers(self):
         mock_gemini_models = [ModelInfo(name="gemini-2.5-flash", family="Gemini")]
         mock_ollama_models = [ModelInfo(name="llama3.2:latest", family="llama")]
+        mock_openai_models = [ModelInfo(name="gpt-4o-mini", family="OpenAI-Compatible")]
 
         with patch.object(GeminiProvider, "list_models", AsyncMock(return_value=mock_gemini_models)), \
-             patch.object(OllamaProvider, "list_models", AsyncMock(return_value=mock_ollama_models)):
+             patch.object(OllamaProvider, "list_models", AsyncMock(return_value=mock_ollama_models)), \
+             patch.object(OpenAICompatibleProvider, "list_models", AsyncMock(return_value=mock_openai_models)):
             all_models = await self.assistant.list_models_all_providers()
             self.assertIn("Gemini", all_models)
             self.assertIn("Ollama", all_models)
+            self.assertIn("OpenAI-Compatible", all_models)
             self.assertEqual(len(all_models["Gemini"]["models"]), 1)
             self.assertEqual(len(all_models["Ollama"]["models"]), 1)
+            self.assertEqual(len(all_models["OpenAI-Compatible"]["models"]), 1)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ Submodules:
 """
 from .config import AppConfig, config
 from .core.assistant import AIAssistant, AssistantMode, ToolPermissionMode
+from .core.temporal import get_temporal_context
 
 __all__ = [
     "AppConfig",
@@ -19,4 +20,6 @@ __all__ = [
     "AIAssistant",
     "AssistantMode",
     "ToolPermissionMode",
+    "get_temporal_context",
 ]
+

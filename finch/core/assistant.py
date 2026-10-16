@@ -2,6 +2,13 @@
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from .temporal import (
+    get_temporal_context,
+    inject_temporal_context,
+    extract_temporal_context,
+    strip_temporal_context,
+)
+
 from ..config import AppConfig, config as default_config
 from ..compression import ContextCompressionPipeline, CompressionStats
 from ..memory import SlidingWindowBuffer, PersonaManager, FactsManager
@@ -253,7 +260,7 @@ class AIAssistant:
             tools.extend([READ_FILE_TOOL, WRITE_FILE_TOOL, LIST_DIRECTORY_TOOL])
         return tools
 
-    def build_effective_system_prompt(self) -> str:
+    def build_effective_system_prompt(self, include_temporal: bool = False) -> str:
         """Compose the complete system prompt including persona guidelines and user memory facts."""
         base_prompt = self.persona_manager.build_system_prompt()
         if hasattr(self, "archive") and hasattr(self.archive, "list_facts"):
@@ -266,8 +273,33 @@ class AIAssistant:
                 for f in facts:
                     cat = f.get("category", "general")
                     facts_lines.append(f"- [Fact #{f['id']}] ({cat}): {f['fact']}")
-                return base_prompt + "\n" + "\n".join(facts_lines)
+                base_prompt = base_prompt + "\n" + "\n".join(facts_lines)
+        if include_temporal:
+            return inject_temporal_context(base_prompt)
         return base_prompt
+
+    def build_messages_payload(self) -> List[Dict[str, Any]]:
+        """Construct the provider message payload with dynamic runtime temporal injection.
+
+        Retrieves conversation turns from sliding-window memory, dynamically computes
+        the current local time/weekday/timezone, and appends the [Temporal Context] block
+        to the active system prompt (or prepends a system turn if missing).
+
+        Evaluated per request turn at runtime to prevent stale timestamp caching.
+        """
+        payload = [dict(msg) for msg in self.memory.to_provider_payload()]
+        temporal_context = get_temporal_context()
+
+        if payload and payload[0].get("role") == "system":
+            base_content = payload[0].get("content", "")
+            payload[0]["content"] = inject_temporal_context(base_content, temporal_context)
+        else:
+            payload.insert(0, {
+                "role": "system",
+                "content": temporal_context,
+            })
+
+        return payload
 
     def refresh_system_prompt(self) -> str:
         """Re-synthesize system prompt with persona and facts, and update sliding-window memory."""
@@ -775,8 +807,8 @@ class AIAssistant:
             content=user_input,
         )
 
-        # 2. Build provider message payload
-        messages_payload = self.memory.to_provider_payload()
+        # 2. Build provider message payload with dynamic runtime temporal context
+        messages_payload = self.build_messages_payload()
 
         # 3. Compress messages via Headroom pipeline before sending to LLM
         effective_payload, compression_stats = self.compression_pipeline.compress_messages(

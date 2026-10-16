@@ -98,6 +98,15 @@ class ContextCompressionPipeline:
             kompress_model="disabled",  # Use fast algorithmic / AST / JSON compression
         )
 
+        # Safeguard immutable blocks such as [Temporal Context] before compaction
+        from ..core.temporal import extract_temporal_context, inject_temporal_context
+        temporal_blocks: Dict[int, str] = {}
+        for idx, msg in enumerate(messages):
+            content = msg.get("content", "")
+            tc = extract_temporal_context(content)
+            if tc:
+                temporal_blocks[idx] = tc
+
         start_time = time.perf_counter()
         try:
             result = headroom_compress(
@@ -106,6 +115,16 @@ class ContextCompressionPipeline:
                 config=cfg,
             )
             duration_ms = (time.perf_counter() - start_time) * 1000.0
+
+            compressed_messages = [dict(m) for m in result.messages]
+            # Ensure dynamic [Temporal Context] blocks remain immutable and preserved
+            for idx, orig_tc in temporal_blocks.items():
+                if idx < len(compressed_messages):
+                    curr_content = compressed_messages[idx].get("content", "")
+                    if orig_tc not in curr_content:
+                        compressed_messages[idx]["content"] = inject_temporal_context(
+                            curr_content, orig_tc
+                        )
 
             stats = CompressionStats(
                 tokens_before=result.tokens_before,
@@ -123,7 +142,7 @@ class ContextCompressionPipeline:
             self.total_compressions += 1
             self.last_stats = stats
 
-            return result.messages, stats
+            return compressed_messages, stats
 
         except Exception as e:
             logger.warning(f"Headroom compression failed, falling back to uncompressed: {e}")

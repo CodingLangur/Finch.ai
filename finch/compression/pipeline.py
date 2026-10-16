@@ -98,14 +98,22 @@ class ContextCompressionPipeline:
             kompress_model="disabled",  # Use fast algorithmic / AST / JSON compression
         )
 
-        # Safeguard immutable blocks such as [Temporal Context] before compaction
-        from ..core.temporal import extract_temporal_context, inject_temporal_context
+        # Safeguard immutable blocks such as [Temporal Context] and [Implicit Memory Prefetch] before compaction
+        from ..core.temporal import (
+            extract_temporal_context,
+            inject_temporal_context,
+            extract_prefetched_memories,
+        )
         temporal_blocks: Dict[int, str] = {}
+        prefetch_blocks: Dict[int, str] = {}
         for idx, msg in enumerate(messages):
             content = msg.get("content", "")
             tc = extract_temporal_context(content)
             if tc:
                 temporal_blocks[idx] = tc
+            pf = extract_prefetched_memories(content)
+            if pf:
+                prefetch_blocks[idx] = pf
 
         start_time = time.perf_counter()
         try:
@@ -125,6 +133,13 @@ class ContextCompressionPipeline:
                         compressed_messages[idx]["content"] = inject_temporal_context(
                             curr_content, orig_tc
                         )
+
+            # Ensure [Implicit Memory Prefetch] blocks remain preserved
+            for idx, orig_pf in prefetch_blocks.items():
+                if idx < len(compressed_messages):
+                    curr_content = compressed_messages[idx].get("content", "")
+                    if orig_pf not in curr_content:
+                        compressed_messages[idx]["content"] = f"{curr_content}\n\n{orig_pf}".strip()
 
             stats = CompressionStats(
                 tokens_before=result.tokens_before,

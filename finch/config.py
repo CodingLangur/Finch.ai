@@ -141,6 +141,16 @@ class AppConfig:
     auto_adapt_persona: bool = field(
         default_factory=lambda: os.getenv("AUTO_ADAPT_PERSONA", "false").lower() in ("true", "1", "yes")
     )
+    # Zero-Turn Implicit Memory Prefetch Settings
+    prefetch_enabled: bool = field(
+        default_factory=lambda: os.getenv("PREFETCH_ENABLED", "true").lower() in ("true", "1", "yes")
+    )
+    prefetch_limit: int = field(
+        default_factory=lambda: int(os.getenv("PREFETCH_LIMIT", "3"))
+    )
+    prefetch_max_tokens: int = field(
+        default_factory=lambda: int(os.getenv("PREFETCH_MAX_TOKENS", "350"))
+    )
 
 
 # Global singleton configuration

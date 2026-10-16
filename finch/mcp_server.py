@@ -39,6 +39,7 @@ from finch.memory import FactsManager, PersonaManager
 from finch.retrieval import search_hybrid, load_session_transcript, get_embedder
 from finch.compression import ContextCompressionPipeline
 from finch.core.assistant import AIAssistant, AssistantMode
+from finch.core.temporal import TEMPORAL_PATTERN
 
 
 # Initialize FastMCP Server instance
@@ -347,10 +348,14 @@ async def run_finch_query(prompt: str, mode: str = "chat") -> Dict[str, Any]:
     content_parts = []
     thinking_parts = []
     tools_called = []
-    notices = []
+    # Zero-turn implicit memory prefetch: check incoming prompt against TEMPORAL_PATTERN at ingress
+    prefetched_context = None
+    if TEMPORAL_PATTERN.search(prompt):
+        logger.info("Temporal planning trigger matched in MCP ingress: prompt=%r", prompt)
+        prefetched_context = await assistant.prefetch_temporal_memories(prompt)
 
     try:
-        async for chunk in assistant.chat_stream(prompt):
+        async for chunk in assistant.chat_stream(prompt, prefetched_context=prefetched_context):
             if chunk.delta:
                 content_parts.append(chunk.delta)
             if chunk.thinking_delta:
@@ -413,8 +418,14 @@ async def finch_run_subagent(
     notices: List[str] = []
     last_compression_stats = None
 
+    # Zero-turn implicit memory prefetch: check incoming instruction against TEMPORAL_PATTERN at ingress
+    prefetched_context = None
+    if TEMPORAL_PATTERN.search(instruction):
+        logger.info("Temporal planning trigger matched in MCP subagent ingress: instruction=%r", instruction)
+        prefetched_context = await assistant.prefetch_temporal_memories(instruction)
+
     try:
-        async for chunk in assistant.chat_stream(instruction, max_turns=max_turns):
+        async for chunk in assistant.chat_stream(instruction, max_turns=max_turns, prefetched_context=prefetched_context):
             if chunk.delta:
                 content_parts.append(chunk.delta)
             if chunk.thinking_delta:

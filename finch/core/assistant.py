@@ -1,12 +1,21 @@
-"""AIAssistant orchestrator managing providers, context memory, and modes."""
+import logging
+import re
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
+
 from .temporal import (
+    TEMPORAL_PATTERN,
+    TEMPORAL_TRIGGER_PATTERN,
+    is_temporal_trigger,
     get_temporal_context,
     inject_temporal_context,
     extract_temporal_context,
     strip_temporal_context,
+    format_prefetched_memories,
+    extract_prefetched_memories,
+    strip_prefetched_memories,
 )
 
 from ..config import AppConfig, config as default_config
@@ -278,12 +287,16 @@ class AIAssistant:
             return inject_temporal_context(base_prompt)
         return base_prompt
 
-    def build_messages_payload(self) -> List[Dict[str, Any]]:
+    def build_messages_payload(
+        self,
+        prefetched_context: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Construct the provider message payload with dynamic runtime temporal injection.
 
         Retrieves conversation turns from sliding-window memory, dynamically computes
         the current local time/weekday/timezone, and appends the [Temporal Context] block
-        to the active system prompt (or prepends a system turn if missing).
+        (along with any optional zero-turn prefetched memory block) to the active system prompt
+        (or prepends a system turn if missing).
 
         Evaluated per request turn at runtime to prevent stale timestamp caching.
         """
@@ -292,14 +305,119 @@ class AIAssistant:
 
         if payload and payload[0].get("role") == "system":
             base_content = payload[0].get("content", "")
-            payload[0]["content"] = inject_temporal_context(base_content, temporal_context)
+            system_content = inject_temporal_context(base_content, temporal_context)
+            if prefetched_context:
+                system_content = f"{system_content}\n\n{prefetched_context.strip()}"
+            payload[0]["content"] = system_content
         else:
+            full_system = temporal_context
+            if prefetched_context:
+                full_system = f"{full_system}\n\n{prefetched_context.strip()}"
             payload.insert(0, {
                 "role": "system",
-                "content": temporal_context,
+                "content": full_system,
             })
 
         return payload
+
+    async def prefetch_temporal_memories(
+        self,
+        user_prompt: str,
+        limit: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[str]:
+        """Perform zero-turn implicit memory prefetch using hybrid search and user facts.
+
+        Triggered when incoming user prompt matches planning/scheduling temporal patterns.
+        Queries SQLite archive (conversations.db) via hybrid search and user facts,
+        formats the results into a bounded markdown block, and applies token guardrails.
+
+        Args:
+            user_prompt: Incoming user text.
+            limit: Maximum past conversation sessions to retrieve (default from config: 3).
+            max_tokens: Maximum token budget for the formatted injection block (default from config: 350).
+
+        Returns:
+            Formatted context injection string or None if no relevant memories found.
+        """
+        if not user_prompt or not is_temporal_trigger(user_prompt):
+            return None
+
+        effective_limit = limit if limit is not None else getattr(self.config, "prefetch_limit", 3)
+        effective_max_tokens = max_tokens if max_tokens is not None else getattr(self.config, "prefetch_max_tokens", 350)
+
+        # 1. Execute hybrid search against SQLite archive (conversations.db)
+        past_sessions: List[Any] = []
+        try:
+            current_id = getattr(self.current_session, "id", None)
+            results = await search_hybrid(
+                query=user_prompt,
+                limit=effective_limit + 3,
+                archive=self.archive,
+                embedder=self.embedder,
+            )
+            past_sessions = [r for r in results if r.session_id != current_id][:effective_limit]
+
+            # If conversational query yielded no past sessions, clean conversational noise/stopwords for FTS5
+            if not past_sessions:
+                STOPWORDS = {
+                    "what", "was", "is", "are", "were", "my", "our", "the", "a", "an",
+                    "for", "to", "in", "on", "of", "and", "or", "do", "can", "could",
+                    "would", "we", "i", "you", "me", "please", "tell", "show", "check", "about",
+                }
+                tokens = [w for w in re.findall(r"\b[A-Za-z0-9_]+\b", user_prompt.lower()) if w not in STOPWORDS]
+                if tokens:
+                    cleaned_query = " ".join(tokens)
+                    results2 = await search_hybrid(
+                        query=cleaned_query,
+                        limit=effective_limit + 3,
+                        archive=self.archive,
+                        embedder=self.embedder,
+                    )
+                    past_sessions = [r for r in results2 if r.session_id != current_id][:effective_limit]
+
+                # If still empty, search with matched temporal trigger keywords
+                if not past_sessions:
+                    trigger_matches = [m.group(0) for m in TEMPORAL_PATTERN.finditer(user_prompt)]
+                    if trigger_matches:
+                        results3 = await search_hybrid(
+                            query=" ".join(trigger_matches),
+                            limit=effective_limit + 3,
+                            archive=self.archive,
+                            embedder=self.embedder,
+                        )
+                        past_sessions = [r for r in results3 if r.session_id != current_id][:effective_limit]
+        except Exception as e:
+            logger.debug("Implicit hybrid search failed during prefetch: %s", e)
+            past_sessions = []
+
+        # 2. Query user_facts for relevant facts matching user prompt or planning categories
+        matching_facts: List[Dict[str, Any]] = []
+        if hasattr(self, "archive") and hasattr(self.archive, "list_facts"):
+            try:
+                facts = self.archive.list_facts()
+                if facts:
+                    seen_facts = set()
+                    query_terms = set(re.findall(r"\w{3,}", user_prompt.lower()))
+                    for f in facts:
+                        f_text = f.get("fact", "").strip()
+                        f_cat = f.get("category", "").lower()
+                        if f_text in seen_facts:
+                            continue
+                        if any(term in f_text.lower() for term in query_terms) or f_cat in ("schedule", "routine", "goal", "plan", "preference"):
+                            seen_facts.add(f_text)
+                            matching_facts.append(f)
+                            if len(matching_facts) >= 3:
+                                break
+            except Exception as e:
+                logger.debug("Fact retrieval failed during prefetch: %s", e)
+
+        # 3. Format and apply token guardrail limits
+        return format_prefetched_memories(
+            past_sessions=past_sessions,
+            user_facts=matching_facts,
+            max_tokens=effective_max_tokens,
+        )
 
     def refresh_system_prompt(self) -> str:
         """Re-synthesize system prompt with persona and facts, and update sliding-window memory."""
@@ -793,6 +911,7 @@ class AIAssistant:
         user_input: str,
         enable_tools: bool = True,
         max_turns: Optional[int] = None,
+        prefetched_context: Optional[str] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Process user input, stream model response, execute tools, and persist turn.
         
@@ -807,10 +926,15 @@ class AIAssistant:
             content=user_input,
         )
 
-        # 2. Build provider message payload with dynamic runtime temporal context
-        messages_payload = self.build_messages_payload()
+        # 2. Zero-Turn Implicit Memory Prefetch: if triggered and not pre-supplied
+        if prefetched_context is None and getattr(self.config, "prefetch_enabled", True):
+            if is_temporal_trigger(user_input):
+                prefetched_context = await self.prefetch_temporal_memories(user_input)
 
-        # 3. Compress messages via Headroom pipeline before sending to LLM
+        # 3. Build provider message payload with dynamic runtime temporal context and prefetch
+        messages_payload = self.build_messages_payload(prefetched_context=prefetched_context)
+
+        # 4. Compress messages via Headroom pipeline before sending to LLM
         effective_payload, compression_stats = self.compression_pipeline.compress_messages(
             messages=messages_payload,
             model=self.active_model,

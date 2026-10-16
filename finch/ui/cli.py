@@ -19,6 +19,7 @@ from rich.text import Text
 
 from ..compression.pipeline import CompressionStats
 from ..core.assistant import AIAssistant, AssistantMode
+from ..core.temporal import TEMPORAL_PATTERN
 from ..providers.base import StreamStats
 
 
@@ -1541,8 +1542,14 @@ class InteractiveCLI:
         final_comp_stats: Optional[CompressionStats] = None
         persona_was_updated = False
 
+        # Zero-turn implicit memory prefetch: check incoming user text against TEMPORAL_PATTERN at ingress
+        prefetched_context = None
+        if TEMPORAL_PATTERN.search(user_text):
+            self.console.print("[dim cyan]⚡ Implicit memory prefetch triggered (planning/schedule query)...[/dim cyan]")
+            prefetched_context = await self.assistant.prefetch_temporal_memories(user_text)
+
         try:
-            async for chunk in self.assistant.chat_stream(user_text):
+            async for chunk in self.assistant.chat_stream(user_text, prefetched_context=prefetched_context):
                 if chunk.persona_updated:
                     persona_was_updated = True
 

@@ -1,6 +1,6 @@
 """Dynamic Temporal Context Generator and Zero-Turn Memory Prefetch for Finch.ai."""
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 TEMPORAL_HEADER = "[Temporal Context]"
@@ -14,7 +14,7 @@ TEMPORAL_BLOCK_PATTERN = re.compile(
 
 # Pattern matching implicit memory prefetch blocks
 PREFETCH_BLOCK_PATTERN = re.compile(
-    r"\[Implicit Memory Prefetch: Relevant Past Context\].*?(?=(?:\n\n\[|\n\n#|\n\n---)|\Z)",
+    r"(?:<recalled_past_context>\s*)?\[Implicit Memory Prefetch: Relevant Past Context\].*?(?=(?:\n\n\[|\n\n#|\n\n---|\s*</recalled_past_context>)|\Z)(?:\s*</recalled_past_context>)?",
     re.DOTALL,
 )
 
@@ -43,10 +43,12 @@ TEMPORAL_TRIGGER_KEYWORDS = [
     r"tomorrow",
     r"yesterday",
     r"tonight",
-    r"(?:this|next|last|upcoming)\s+(?:week|weekend|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday|sprint|term)",
+    r"(?:this|next|last|upcoming)\s+(?:week|weekend|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday|sprint|term|quarter)",
     r"when\s+(?:is|are|was|were|did|do|will|can)\b",
     r"what\s+time\b",
     r"what\s+day\b",
+    r"coming\s+up\b",
+    r"upcoming\b",
 ]
 
 TEMPORAL_PATTERN = re.compile(
@@ -100,12 +102,18 @@ def get_temporal_context(
 
     tz_display = f"{tz_name} ({utc_offset_str})" if tz_name else utc_offset_str
 
+    # Compute upcoming 7 days to eliminate LLM arithmetic hallucinations for relative dates
+    upcoming_days = [(dt + timedelta(days=i)).strftime("%A (%Y-%m-%d)") for i in range(1, 8)]
+    upcoming_str = ", ".join(upcoming_days)
+
     lines = [
         TEMPORAL_HEADER,
         f"- Current Time: {weekday}, {formatted_date_time} {tz_display}",
         f"- Weekday: {weekday}",
         f"- Timezone: {tz_display}",
         f"- ISO Timestamp: {dt.isoformat()}",
+        f"- Upcoming Week Days: {upcoming_str}",
+        "- Reference Note: Use this current timestamp and weekday reference to resolve all relative dates (e.g., 'today', 'tomorrow', 'yesterday', 'next Wednesday', upcoming deadlines).",
     ]
     block = "\n".join(lines)
 
@@ -154,16 +162,19 @@ def format_prefetched_memories(
     past_sessions: List[Any],
     user_facts: Optional[List[Dict[str, Any]]] = None,
     max_tokens: int = 350,
+    wrap_tags: bool = True,
 ) -> Optional[str]:
     """Format retrieved hybrid search sessions and user facts into a clean context block.
 
     Applies token guardrail limits (default 350 tokens, ~1400 chars) to prevent ambient
-    memory from consuming excessive context space.
+    memory from consuming excessive context space. Wraps results in <recalled_past_context>
+    tags so LLMs cleanly recognize them as recalled past context.
 
     Args:
         past_sessions: List of HybridSearchResult objects or session dicts.
         user_facts: Optional list of relevant user facts.
         max_tokens: Maximum token threshold for context guardrail (default 350).
+        wrap_tags: If True, wraps block in XML `<recalled_past_context>` tags.
 
     Returns:
         Cleanly formatted markdown memory block, or None if no memories provided.
@@ -209,6 +220,8 @@ def format_prefetched_memories(
         truncated = block[:max_chars].rsplit("\n", 1)[0]
         block = f"{truncated}\n... [remaining memory truncated to {max_tokens} tokens context limit]"
 
+    if wrap_tags:
+        return f"<recalled_past_context>\n{block}\n</recalled_past_context>"
     return block
 
 

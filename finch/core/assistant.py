@@ -364,6 +364,7 @@ class AIAssistant:
                     "what", "was", "is", "are", "were", "my", "our", "the", "a", "an",
                     "for", "to", "in", "on", "of", "and", "or", "do", "can", "could",
                     "would", "we", "i", "you", "me", "please", "tell", "show", "check", "about",
+                    "have", "coming", "up", "any", "some",
                 }
                 tokens = [w for w in re.findall(r"\b[A-Za-z0-9_]+\b", user_prompt.lower()) if w not in STOPWORDS]
                 if tokens:
@@ -376,17 +377,31 @@ class AIAssistant:
                     )
                     past_sessions = [r for r in results2 if r.session_id != current_id][:effective_limit]
 
-                # If still empty, search with matched temporal trigger keywords
+                # If still empty, search with matched temporal trigger keywords or deadline/schedule synonyms
                 if not past_sessions:
                     trigger_matches = [m.group(0) for m in TEMPORAL_PATTERN.finditer(user_prompt)]
+                    prompt_lower = user_prompt.lower()
+                    synonym_queries = []
+                    if any(w in prompt_lower for w in ("deadline", "deadlines", "due", "submission")):
+                        synonym_queries.extend(["deadline", "submission", "due", "assignment", "report"])
+                    if any(w in prompt_lower for w in ("schedule", "calendar", "agenda", "plan", "appointment")):
+                        synonym_queries.extend(["schedule", "meeting", "plan", "calendar", "agenda"])
+
+                    candidate_queries = []
                     if trigger_matches:
+                        candidate_queries.append(" ".join(trigger_matches))
+                    candidate_queries.extend(synonym_queries)
+
+                    for cq in candidate_queries:
                         results3 = await search_hybrid(
-                            query=" ".join(trigger_matches),
+                            query=cq,
                             limit=effective_limit + 3,
                             archive=self.archive,
                             embedder=self.embedder,
                         )
                         past_sessions = [r for r in results3 if r.session_id != current_id][:effective_limit]
+                        if past_sessions:
+                            break
         except Exception as e:
             logger.debug("Implicit hybrid search failed during prefetch: %s", e)
             past_sessions = []
@@ -399,12 +414,24 @@ class AIAssistant:
                 if facts:
                     seen_facts = set()
                     query_terms = set(re.findall(r"\w{3,}", user_prompt.lower()))
+                    planning_categories = {
+                        "schedule", "routine", "goal", "plan", "preference",
+                        "deadline", "deadlines", "assignment", "todo", "milestone", "submission",
+                    }
+                    planning_keywords = (
+                        "deadline", "submission", "due", "schedule", "assignment",
+                        "report", "milestone", "exam", "meeting", "agenda",
+                    )
                     for f in facts:
                         f_text = f.get("fact", "").strip()
                         f_cat = f.get("category", "").lower()
                         if f_text in seen_facts:
                             continue
-                        if any(term in f_text.lower() for term in query_terms) or f_cat in ("schedule", "routine", "goal", "plan", "preference"):
+                        if (
+                            any(term in f_text.lower() for term in query_terms)
+                            or f_cat in planning_categories
+                            or any(term in f_text.lower() for term in planning_keywords)
+                        ):
                             seen_facts.add(f_text)
                             matching_facts.append(f)
                             if len(matching_facts) >= 3:

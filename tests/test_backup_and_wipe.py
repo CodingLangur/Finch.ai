@@ -254,6 +254,61 @@ class TestAIAssistantWipeExportImport(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Developer Assistant", self.assistant.persona_manager.load_persona())
         self.assertIn("Developer Assistant", self.assistant.memory.get_system_prompt())
 
+    async def test_assistant_export_and_import_backup_with_facts_and_temporal_prefetch(self):
+        """Verify user facts, deadlines, and temporal prefetch are preserved across backup/restore."""
+        # 1. Add mock deadline and schedule fact
+        self.assistant.archive.add_fact(
+            fact="Operating Systems report submission is set for next Tuesday",
+            category="deadline",
+        )
+        self.assistant.archive.add_fact(
+            fact="Daily standup scheduled at 10 AM",
+            category="schedule",
+        )
+        # 2. Add past session with scheduling turn
+        sess = self.assistant.archive.create_session(title="OS Course Tasks", model="mock", mode="chat")
+        self.assistant.archive.add_message(sess.id, "user", "When is the project deadline?")
+        self.assistant.archive.add_message(sess.id, "assistant", "Operating Systems report submission is set for next Tuesday.")
+
+        # 3. Export backup bundle
+        zip_path = self.assistant.export_backup()
+        self.assertTrue(os.path.exists(zip_path))
+
+        # Check zip entries
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            namelist = zf.namelist()
+            self.assertIn("user_facts.json", namelist)
+            self.assertIn("conversations.json", namelist)
+            self.assertIn("conversations.db", namelist)
+            self.assertIn("personality.md", namelist)
+            self.assertIn("manifest.json", namelist)
+
+        # 4. Wipe everything
+        self.assistant.archive.wipe_all_facts()
+        self.assistant.wipe_conversation(all_sessions=True)
+        self.assertEqual(len(self.assistant.archive.list_facts()), 0)
+
+        # 5. Restore backup in replace mode
+        res = self.assistant.import_backup(zip_path, mode="replace")
+        self.assertTrue(res["success"])
+        self.assertEqual(res["facts_restored"], 2)
+
+        # 6. Verify restored facts
+        facts = self.assistant.archive.list_facts()
+        self.assertEqual(len(facts), 2)
+        fact_texts = [f["fact"] for f in facts]
+        self.assertIn("Operating Systems report submission is set for next Tuesday", fact_texts)
+        self.assertIn("Daily standup scheduled at 10 AM", fact_texts)
+
+        # 7. Verify zero-turn temporal memory prefetch works on the restored assistant
+        from finch.core.assistant import AIAssistant as FinchAssistant
+        finch_assistant = FinchAssistant(config=self.config, archive=self.assistant.archive)
+        prefetch = await finch_assistant.prefetch_temporal_memories("What deadlines do I have coming up?")
+        self.assertIsNotNone(prefetch)
+        self.assertIn("<recalled_past_context>", prefetch)
+        self.assertIn("Operating Systems report submission is set for next Tuesday", prefetch)
+
+
     async def test_assistant_adapt_persona(self):
         """Verify AIAssistant adapt_persona parses model update tags and updates personality.md."""
         adapted_doc = (

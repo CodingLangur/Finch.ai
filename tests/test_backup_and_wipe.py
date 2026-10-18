@@ -374,27 +374,46 @@ class TestCLIWipeAndClearCommands(unittest.IsolatedAsyncioTestCase):
         self.assistant.close()
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_cli_wipe_current_shorthand(self):
+    async def test_cli_wipe_current_shorthand(self):
         self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Testing wipe current")
-        self.cli.handle_wipe_command("current")
+        await self.cli.handle_wipe_command("current")
         output = self.string_io.getvalue()
         self.assertIn("Successfully wiped conversation messages for active session", output)
         self.assertEqual(len(self.assistant.archive.get_messages(self.assistant.current_session.id)), 0)
 
-    def test_cli_wipe_all_shorthand(self):
+    async def test_cli_wipe_all_shorthand(self):
         self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Msg 1")
         s2 = self.assistant.archive.create_session(title="S2")
         self.assistant.archive.add_message(s2.id, "user", "Msg 2")
 
-        self.cli.handle_wipe_command("all")
+        await self.cli.handle_wipe_command("all")
         output = self.string_io.getvalue()
         self.assertIn("Successfully wiped ALL conversation history", output)
         self.assertEqual(len(self.assistant.archive.list_sessions()), 1)
 
-    def test_cli_wipe_conversation_synonyms(self):
+    async def test_cli_wipe_conversation_synonyms(self):
         self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Msg")
-        self.cli.handle_wipe_command("conversations current")
+        await self.cli.handle_wipe_command("conversations current")
         self.assertIn("Successfully wiped conversation messages", self.string_io.getvalue())
+
+    async def test_cli_wipe_interactive_menu_current(self):
+        """Verify interactive /wipe menu selects option 1 without event loop crash."""
+        from unittest.mock import patch
+        self.assistant.archive.add_message(self.assistant.current_session.id, "user", "Interactive Msg")
+        with patch("prompt_toolkit.PromptSession.prompt_async", AsyncMock(return_value="1")):
+            await self.cli.handle_input("/wipe")
+        output = self.string_io.getvalue()
+        self.assertIn("Wipe Options:", output)
+        self.assertIn("Successfully wiped conversation messages for active session", output)
+        self.assertEqual(len(self.assistant.archive.get_messages(self.assistant.current_session.id)), 0)
+
+    async def test_cli_wipe_interactive_menu_cancel(self):
+        """Verify interactive /wipe menu cancel option."""
+        from unittest.mock import patch
+        with patch("prompt_toolkit.PromptSession.prompt_async", AsyncMock(return_value="5")):
+            await self.cli.handle_input("/wipe")
+        output = self.string_io.getvalue()
+        self.assertIn("Wipe cancelled.", output)
 
     async def test_cli_clear_command_variants(self):
         # 1. /clear default (clears in-memory buffer)

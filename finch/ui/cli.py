@@ -534,7 +534,7 @@ class InteractiveCLI:
                 "[dim]After saving, run [bold cyan]/persona reload[/bold cyan] to apply changes without restarting.[/dim]\n"
             )
         elif arg in ("wipe", "reset"):
-            self.handle_wipe_command("persona")
+            await self.handle_wipe_command("persona")
         elif arg in ("adapt", "evolve"):
             await self.handle_persona_adapt_command()
         else:
@@ -572,7 +572,7 @@ class InteractiveCLI:
         else:
             self.console.print(f"[bold yellow]Persona adaptation notice:[/bold yellow] {msg}\n")
 
-    def handle_wipe_command(self, arg: str) -> None:
+    async def handle_wipe_command(self, arg: str) -> None:
         """Wipe conversation history, personality.md, or long-term memory facts."""
         raw_parts = arg.strip().split()
         if not raw_parts:
@@ -586,7 +586,7 @@ class InteractiveCLI:
             )
             try:
                 conf_session = PromptSession(multiline=False)
-                choice = conf_session.prompt("Select an option [1-5]: ").strip()
+                choice = (await conf_session.prompt_async("Select an option [1-5]: ")).strip()
             except (KeyboardInterrupt, EOFError):
                 self.console.print("\n[dim]Wipe cancelled.[/dim]\n")
                 return
@@ -1452,7 +1452,7 @@ class InteractiveCLI:
                 return True
 
             elif command in ("/wipe", "/reset"):
-                self.handle_wipe_command(arg)
+                await self.handle_wipe_command(arg)
                 return True
 
             elif command in ("/export", "/backup"):

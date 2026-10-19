@@ -560,8 +560,9 @@ class TestLiveGeminiAgentModeIntegration(unittest.IsolatedAsyncioTestCase):
                 if chunk.delta:
                     response_tokens.append(chunk.delta)
         except RuntimeError as e:
-            if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
-                self.skipTest(f"Gemini API rate limit / quota exceeded: {e}")
+            err_str = str(e)
+            if any(k in err_str or k in err_str.lower() for k in ("429", "503", "quota", "resource_exhausted", "unavailable", "high demand")):
+                self.skipTest(f"Gemini API rate limit or transient service unavailability: {e}")
             raise
 
         full_answer = "".join(response_tokens).strip()

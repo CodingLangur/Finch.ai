@@ -83,6 +83,12 @@ def parse_args() -> argparse.Namespace:
         help="Disable automatic session summarization on exit",
     )
     parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="LLM inference request timeout in seconds (default: from .env or 360.0)",
+    )
+    parser.add_argument(
         "-q", "--query",
         type=str,
         default=None,
@@ -132,6 +138,8 @@ async def main_async() -> None:
         config.db_path = args.db
     if args.no_auto_summarize:
         config.auto_summarize_on_exit = False
+    if args.timeout is not None:
+        config.request_timeout = args.timeout
 
     assistant = AIAssistant(config=config)
     cli = InteractiveCLI(assistant=assistant)

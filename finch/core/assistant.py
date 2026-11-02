@@ -555,6 +555,16 @@ class AIAssistant:
         """Switch the active generation model."""
         self.active_model = model_name.strip()
 
+    def set_request_timeout(self, timeout: float) -> float:
+        """Update the active LLM request timeout in seconds."""
+        timeout_val = max(5.0, float(timeout))
+        self.config.request_timeout = timeout_val
+        if hasattr(self.provider, "timeout"):
+            self.provider.timeout = timeout_val
+        if hasattr(self, "summarizer") and hasattr(self.summarizer, "provider") and hasattr(self.summarizer.provider, "timeout"):
+            self.summarizer.provider.timeout = timeout_val
+        return timeout_val
+
     def switch_provider(
         self,
         provider_name: str,

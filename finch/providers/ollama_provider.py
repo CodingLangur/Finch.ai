@@ -78,7 +78,13 @@ class OllamaProvider(BaseLLMProvider):
         first_token_time: Optional[float] = None
         total_tokens_received = 0
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client_timeout = httpx.Timeout(
+            connect=15.0,
+            read=self.timeout,
+            write=60.0,
+            pool=15.0,
+        )
+        async with httpx.AsyncClient(timeout=client_timeout) as client:
             try:
                 async with client.stream("POST", url, json=payload) as response:
                     if response.status_code != 200:
@@ -147,4 +153,10 @@ class OllamaProvider(BaseLLMProvider):
             except httpx.ConnectError as e:
                 raise ConnectionError(
                     f"Could not connect to Ollama at {self.base_url}. Ensure Ollama is running (`ollama serve`)."
+                ) from e
+            except httpx.TimeoutException as e:
+                raise TimeoutError(
+                    f"Ollama inference timed out after {self.timeout:.1f}s while processing model '{model}'. "
+                    f"Heavier models on CPU require more time for prompt evaluation and loading. "
+                    f"You can increase the timeout with `/timeout <seconds>` or by setting REQUEST_TIMEOUT in .env."
                 ) from e

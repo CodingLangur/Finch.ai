@@ -167,6 +167,7 @@ class InteractiveCLI:
         banner.add_row("Persona:", f"[yellow]{self.assistant.config.personality_path}[/yellow]")
         banner.add_row("Compression:", comp_status)
         banner.add_row("Sliding Window:", f"{self.assistant.memory.max_messages} messages (pinned system prompt)")
+        banner.add_row("Request Timeout:", f"{self.assistant.config.request_timeout}s")
         banner.add_row("Process Memory:", f"{mem_mb} MB")
 
         panel = Panel(
@@ -211,6 +212,7 @@ class InteractiveCLI:
         table.add_row("/storage", "Inspect database disk footprint, page count, and WAL size")
         table.add_row("/archive [days]", "Archive inactive sessions older than N days to archive DB")
         table.add_row("/system [text]", "View or update the pinned system prompt directly")
+        table.add_row("/timeout [seconds]", "Inspect or update LLM request timeout (e.g. /timeout 360)")
         table.add_row("/help", "Show this help table")
         table.add_row("/exit, /quit", "Exit session (auto-summarizes unless empty)")
         self.console.print(table)
@@ -1192,6 +1194,29 @@ class InteractiveCLI:
         self.console.print(panel)
         self.console.print()
 
+    def handle_timeout_command(self, arg: str) -> None:
+        """Inspect or update the active LLM inference request timeout."""
+        token = arg.strip()
+        if not token:
+            self.console.print(
+                f"[bold cyan]Current LLM Request Timeout:[/bold cyan] {self.assistant.config.request_timeout}s\n"
+                f"[dim]Usage: /timeout <seconds> (e.g. /timeout 360, /timeout 600)[/dim]\n"
+            )
+            return
+
+        try:
+            val = float(token)
+            if val < 5.0:
+                self.console.print("[yellow]Timeout must be at least 5.0 seconds.[/yellow]\n")
+                return
+            new_val = self.assistant.set_request_timeout(val)
+            self._save_env_key("REQUEST_TIMEOUT", str(new_val))
+            self.console.print(
+                f"[bold green]✓ LLM request timeout updated to {new_val:.1f}s and persisted to .env[/bold green]\n"
+            )
+        except ValueError:
+            self.console.print(f"[bold red]Invalid timeout value '{token}'. Must be a number (seconds).[/bold red]\n")
+
     def handle_archive_command(self, arg: str) -> None:
         """Archive older sessions to an archive database file and vacuum main database."""
         days = 30
@@ -1522,6 +1547,10 @@ class InteractiveCLI:
                 else:
                     prompt = self.assistant.memory.get_system_prompt() or "(None)"
                     self.console.print(f"[bold cyan]Current System Prompt:[/bold cyan]\n{prompt}\n")
+                return True
+
+            elif command == "/timeout":
+                self.handle_timeout_command(arg)
                 return True
 
             else:

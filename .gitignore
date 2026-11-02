@@ -46,11 +46,18 @@ venv.bak/
 conversations.db
 conversations_archive.db
 test_*.db
-personality.md.bak
+
+# Assistant persona, custom traits, and persona backups
+personality.md
+personality.md.*
+*.bak
+!personality.md.example
 
 # Backups and archive exports
 backups/
+backups/*
 *.zip
+*.tar.gz
 
 # Unit test / coverage reports
 htmlcov/

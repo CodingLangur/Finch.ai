@@ -75,7 +75,7 @@ class AppConfig:
         )
     )
     request_timeout: float = field(
-        default_factory=lambda: float(os.getenv("REQUEST_TIMEOUT", "120.0"))
+        default_factory=lambda: float(os.getenv("REQUEST_TIMEOUT", "360.0"))
     )
     personality_path: str = field(
         default_factory=lambda: os.getenv("PERSONALITY_FILE", "personality.md")

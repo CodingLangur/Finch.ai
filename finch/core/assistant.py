@@ -1,7 +1,7 @@
 import logging
 import re
 from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 

@@ -135,6 +135,7 @@ def search_keyword(
 
 def load_session_transcript(
     session_id: str,
+    include_system: bool = False,
     archive: Optional[SQLiteArchive] = None,
     db_path: Optional[str] = None,
 ) -> Optional[SessionTranscript]:
@@ -147,10 +148,17 @@ def load_session_transcript(
 
     try:
         session = archive.get_session(session_id)
+        if not session and not session_id.startswith("sess_"):
+            session = archive.get_session(f"sess_{session_id}")
+            if session:
+                session_id = session.id
         if not session:
             return None
 
-        data = archive.get_session_transcript(session_id)
+        data = archive.get_session_transcript(session_id, include_system=include_system)
+        if not data:
+            return None
+
         turns = []
         for t in data["turns"]:
             turns.append(
@@ -159,8 +167,8 @@ def load_session_transcript(
                     role=t["role"],
                     content=t["content"],
                     timestamp=t["timestamp"],
-                    thinking=t["thinking"],
-                    tokens=t["tokens"],
+                    thinking=t.get("thinking"),
+                    tokens=t.get("tokens", 0),
                 )
             )
 

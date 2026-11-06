@@ -1,6 +1,6 @@
 """AIAssistant orchestrator managing providers, context memory, and modes."""
 from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from ..config import AppConfig, config as default_config
 from ..compression.pipeline import ContextCompressionPipeline, CompressionStats

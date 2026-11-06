@@ -16,6 +16,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.markup import escape
 
 from ..compression.pipeline import CompressionStats
 from ..core.assistant import AIAssistant, AssistantMode
@@ -204,7 +205,7 @@ class InteractiveCLI:
         table.add_row("/compress [on|off|stats]", "Toggle or inspect Headroom context compression")
         table.add_row("/persona [reload|edit|adapt|wipe]", "View, reload, adapt, or reset personality.md")
         table.add_row("/wipe [current|all|persona|memory]", "Wipe conversation history (active or all), persona, or memory facts")
-        table.add_row("/export [backup|md|html] [path]", "Export backup bundle (.zip), Markdown transcript, or HTML")
+        table.add_row("/export [backup|md|html|hermes] [path]", "Export backup bundle (.zip), Markdown/HTML transcript, or Hermes agent state")
         table.add_row("/import <filepath> [mode]", "Restore conversation data and personality.md from backup")
         table.add_row("/buffer", "Inspect current sliding-window message buffer")
         table.add_row("/clear [all|history]", "Clear in-memory buffer, or wipe SQLite conversation history")
@@ -745,6 +746,39 @@ class InteractiveCLI:
             )
             return
 
+        elif subcmd in ("hermes", "agent"):
+            hermes_dir = parts[1] if len(parts) > 1 and not parts[1].startswith("-") else None
+            with self.console.status("[bold cyan]Exporting to Hermes agent (SOUL.md + USER.md)...[/bold cyan]"):
+                try:
+                    from ..tools.export_hermes import export_to_hermes
+                    res = export_to_hermes(
+                        hermes_dir=hermes_dir,
+                        configure_mcp=True,
+                    )
+                except Exception as e:
+                    self.console.print(f"[bold red]Hermes export failed:[/bold red] {e}\n")
+                    return
+
+            grid = Table.grid(padding=1)
+            grid.add_column(style="cyan", justify="left")
+            grid.add_column(style="bold white", justify="left")
+
+            grid.add_row("Hermes Directory:", res["hermes_dir"])
+            grid.add_row("Persona (SOUL.md):", f"{res['soul_file']} ({res['soul_bytes']} bytes)")
+            grid.add_row("Memories (USER.md):", f"{res['user_file']} ({res['facts_count']} facts, {res['user_memories_bytes']} bytes)")
+            if res.get("mcp_config"):
+                grid.add_row("MCP Server:", f"{res['mcp_config']['config_file']} ({len(res['mcp_config']['tools'])} tools)")
+
+            panel = Panel(
+                grid,
+                title="[bold green]✓ Hermes Seed Migration Complete[/bold green]",
+                border_style="green",
+                box=ROUNDED,
+            )
+            self.console.print(panel)
+            self.console.print()
+            return
+
         # Default: Full backup export bundle (.zip)
         target_path = arg.strip() if arg.strip() and subcmd not in ("backup", "zip", "all") else (parts[1] if len(parts) > 1 else None)
         with self.console.status("[bold cyan]Creating backup bundle (conversations + personality + facts)...[/bold cyan]"):
@@ -1131,8 +1165,8 @@ class InteractiveCLI:
 
         self.console.print(
             Panel(
-                transcript.formatted_transcript,
-                title=f"[bold cyan]Transcript: {transcript.title} ({transcript.session_id})[/bold cyan]",
+                Text(transcript.formatted_transcript),
+                title=f"[bold cyan]Transcript: {escape(transcript.title)} ({escape(transcript.session_id)})[/bold cyan]",
                 border_style="cyan",
                 box=ROUNDED,
             )

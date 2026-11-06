@@ -271,6 +271,47 @@ Configuration is defined in config.py and ai_assistant/storage/sqlite_archive.py
         )
         self.assertIsNone(transcript)
 
+    def test_finch_retrieval_load_session_transcript_include_system(self):
+        """Test finch.retrieval load_session_transcript with include_system=True/False and prefix resolution."""
+        from finch.retrieval.search import load_session_transcript as finch_load_transcript
+        
+        # Add a system message to test session
+        self.archive.add_message(
+            session_id="sess_algorithms",
+            role="system",
+            content="You are a helpful coding assistant.",
+            timestamp="2026-09-24T10:14:00Z",
+        )
+
+        # Test without system prompt
+        t_no_sys = finch_load_transcript(
+            session_id="sess_algorithms",
+            include_system=False,
+            archive=self.archive,
+        )
+        self.assertIsNotNone(t_no_sys)
+        self.assertEqual(len(t_no_sys.turns), 2)
+
+        # Test with system prompt
+        t_sys = finch_load_transcript(
+            session_id="sess_algorithms",
+            include_system=True,
+            archive=self.archive,
+        )
+        self.assertIsNotNone(t_sys)
+        self.assertEqual(len(t_sys.turns), 3)
+        self.assertIn("system", [t.role for t in t_sys.turns])
+
+        # Test resolving session ID without 'sess_' prefix
+        raw_id = "sess_algorithms".replace("sess_", "")
+        t_noprefix = finch_load_transcript(
+            session_id=raw_id,
+            include_system=False,
+            archive=self.archive,
+        )
+        self.assertIsNotNone(t_noprefix)
+        self.assertEqual(t_noprefix.session_id, "sess_algorithms")
+
 
 class TestGeminiLexicalSearchIntegration(unittest.IsolatedAsyncioTestCase):
     """Integration test using live Gemini API key for inference and FTS5 search verification."""

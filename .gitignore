@@ -1,7 +1,8 @@
-# Environment variables and API keys (including Gemini API keys)
+# Environment variables, credentials, and API keys
 .env
 .env.*
 *.env
+*.local
 !.env.example
 
 # Byte-compiled / optimized / DLL files
@@ -38,26 +39,64 @@ ENV/
 env.bak/
 venv.bak/
 
-# SQLite databases, journals, and runtime files
+# SQLite databases, journals, WAL, and runtime archives (conversations & memory)
 *.db
+*.sqlite
+*.sqlite3
 *.db-journal
 *.db-wal
 *.db-shm
 conversations.db
+conversations.db*
 conversations_archive.db
+conversations_archive.db*
 test_*.db
+
+# Exported transcripts, conversation dumps, and user facts
+conversations.json
+conversations_*.json
+*.conversations.json
+user_facts.json
+user_facts.*.json
+*.facts.json
+facts.json
+manifest.json
+transcripts/
+transcripts/*
+transcript_*.md
+transcript_*.html
+*.transcript.md
+*.transcript.html
+*.transcript.json
 
 # Assistant persona, custom traits, and persona backups
 personality.md
 personality.md.*
+personality.*.md
+personality_*.md
 *.bak
 !personality.md.example
+
+# Interactive CLI history files
+.finch_history
+*.finch_history
+*.history
 
 # Backups and archive exports
 backups/
 backups/*
 *.zip
 *.tar.gz
+*.tar
+
+# Logging, server telemetry, and process files
+finch_mcp.log
+*.log
+logs/
+*.pid
+
+# Local agent migration folders (e.g. Hermes local testing)
+.hermes/
 
 # Unit test / coverage reports
 htmlcov/

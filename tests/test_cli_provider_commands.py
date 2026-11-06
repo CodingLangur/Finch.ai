@@ -74,6 +74,50 @@ class TestCLIProviderCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.assistant.provider.name, "OpenAI-Compatible")
         self.assertEqual(self.assistant.active_model, "gpt-4o")
 
+    async def test_handle_transcript_command_current_session(self):
+        self.assistant.archive.add_message(
+            session_id=self.assistant.current_session.id,
+            role="user",
+            content="Hello from test",
+        )
+        self.cli.handle_transcript_command("")
+        self.cli.console.print.assert_called()
+
+    async def test_handle_transcript_command_by_id(self):
+        sess = self.assistant.archive.create_session(title="Historical Session")
+        self.assistant.archive.add_message(
+            session_id=sess.id,
+            role="user",
+            content="Historical question",
+        )
+        self.assistant.archive.add_message(
+            session_id=sess.id,
+            role="assistant",
+            content="Historical answer",
+        )
+        self.cli.handle_transcript_command(sess.id)
+        self.cli.console.print.assert_called()
+
+    async def test_handle_transcript_command_not_found(self):
+        self.cli.handle_transcript_command("nonexistent_session_id")
+        self.cli.console.print.assert_called()
+
+    async def test_handle_input_transcript_slash_command(self):
+        handled = await self.cli.handle_input("/transcript")
+        self.assertTrue(handled)
+        self.cli.console.print.assert_called()
+
+    async def test_handle_export_hermes_slash_command(self):
+        import tempfile
+        import shutil
+        tmp = tempfile.mkdtemp()
+        try:
+            handled = await self.cli.handle_input(f"/export hermes {tmp}")
+            self.assertTrue(handled)
+            self.cli.console.print.assert_called()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -141,6 +141,9 @@ python -m finch.cli --provider openai --model gpt-4o-mini
 # Launch with any OpenAI-compatible local or cloud server (e.g. vLLM, LM Studio, Groq, DeepSeek)
 python -m finch.cli --provider openai --base-url http://localhost:1234/v1 --model local-model
 
+# Launch with custom inference request timeout (e.g. 360s for local CPU Ollama)
+python -m finch.cli --timeout 360.0
+
 # Start directly in Autonomous Agent Mode
 python -m finch.cli --mode agent
 
@@ -205,6 +208,9 @@ Export verified persona instructions and persistent facts directly into Hermes A
 # Preview or migrate persona & facts to ~/.hermes/
 python -m finch.tools.export_hermes --dry-run
 python -m finch.tools.export_hermes
+
+# Or trigger export directly within Finch CLI
+/export hermes
 ```
 
 ---
@@ -222,8 +228,11 @@ Inside an active CLI session, use slash commands to inspect state, adjust guardr
 | **`/facts`** | `/facts [category]` | List all stored user facts and knowledge categorized by domain. |
 | **`/hybrid`** | `/hybrid <query>` | Execute semantic + lexical (FTS5 + `sqlite-vec` RRF) search across history. |
 | **`/search`** | `/search <query>` | Fast BM25 exact lexical search across past conversation turns. |
+| **`/transcript`** | `/transcript [id]` | View full dialogue transcript for an identified past session or current active session. |
+| **`/sessions`** | `/sessions [limit]` | List archived conversation sessions with message counts, summaries, and timestamps. |
 | **`/storage`** | `/storage` | Inspect SQLite database footprint, message counts, and `zstd` compression stats. |
 | **`/vacuum`** | `/vacuum` | Perform database maintenance, WAL checkpointing, and page defragmentation. |
+| **`/timeout`** | `/timeout [seconds]` | Inspect or update LLM inference timeout (e.g. `/timeout 360` for heavy local CPU models). |
 | **`/tools`** | `/tools [cat] [off\|ask\|auto]` | Inspect or update guardrails for `terminal`, `python`, `web`, or `files`. |
 | **`/mode`** | `/mode [chat\|agent]` | Switch between single-turn Chat mode and autonomous multi-turn Agent mode. |
 | **`/persona`** | `/persona [reload\|adapt\|edit]` | Inspect, evolve, or reload system prompt rules from `personality.md`. |
@@ -231,7 +240,7 @@ Inside an active CLI session, use slash commands to inspect state, adjust guardr
 | **`/provider`** | `/provider [name] [key] [url]` | Inspect current provider, dynamically switch runtime (`ollama\|gemini\|openai`), or configure endpoint/key. |
 | **`/providers`** | `/providers` | Table of all configured inference providers (Ollama, Gemini, OpenAI-Compatible), endpoints, and health status. |
 | **`/models`** | `/models [provider\|all]` / `/use <model>` | View models for current, specific (`gemini\|ollama\|openai`), or all providers, or switch active model. |
-| **`/export`** | `/export <md\|html\|bundle>` | Export session as GitHub-flavored Markdown, styled HTML, or backup zip. |
+| **`/export`** | `/export [backup\|md\|html\|hermes] [path]` | Export backup zip, Markdown/HTML dialogue transcript, or Hermes Agent state. |
 | **`/help`** | `/help` | Print the full interactive command reference manual. |
 
 </details>

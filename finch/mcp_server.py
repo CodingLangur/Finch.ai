@@ -348,6 +348,7 @@ async def run_finch_query(prompt: str, mode: str = "chat") -> Dict[str, Any]:
     content_parts = []
     thinking_parts = []
     tools_called = []
+    notices = []
     # Zero-turn implicit memory prefetch: check incoming prompt against TEMPORAL_PATTERN at ingress
     prefetched_context = None
     if TEMPORAL_PATTERN.search(prompt):

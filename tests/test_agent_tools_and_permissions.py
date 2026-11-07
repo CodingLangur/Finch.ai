@@ -115,9 +115,10 @@ class TestTerminalToolExecution(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_command_truncation(self):
         """Verify that excessively large output is truncated safely."""
         # Generate 20,000 characters
+        import sys
         result = await self.dispatcher.execute(
             "run_terminal_command",
-            {"command": "python -c 'print(\"A\" * 20000)'"},
+            {"command": f"{sys.executable} -c 'print(\"A\" * 20000)'"},
         )
         self.assertIn("...[Output truncated]", result)
         self.assertLess(len(result), 15000)
@@ -326,6 +327,123 @@ class TestCLIToolsCommand(unittest.TestCase):
         """Verify /tools with invalid category displays error message."""
         self.cli.handle_tools_command("invalid_cat on")
         self.assertIn("Unknown tool category", self.string_io.getvalue())
+
+
+class TestToolRobustArgumentHandling(unittest.IsolatedAsyncioTestCase):
+    """Test resilience of tools to null, non-numeric, or missing parameters (GitHub Issue #1)."""
+
+    async def asyncSetUp(self):
+        self.archive = SQLiteArchive(db_path=":memory:")
+        self.config = AppConfig(
+            db_path=":memory:",
+            enable_terminal_tool=True,
+            enable_python_tool=True,
+            enable_web_tool=True,
+        )
+        self.assistant = AIAssistant(
+            config=self.config,
+            archive=self.archive,
+            provider=MockLLMProvider(["ok"]),
+            embedder=MockEmbedder(8),
+        )
+        self.assistant.set_mode(AssistantMode.AGENT)
+        self.dispatcher = ToolDispatcher(self.assistant)
+
+    def tearDown(self):
+        self.assistant.close()
+
+    async def test_search_past_conversations_with_null_limit(self):
+        """Verify search_past_conversations handles limit=None without raising TypeError."""
+        result = await self.dispatcher.execute(
+            "search_past_conversations",
+            {"query": "machine learning", "limit": None},
+        )
+        self.assertIn("No past conversations found matching", result)
+
+    async def test_search_past_conversations_with_invalid_limit(self):
+        """Verify search_past_conversations handles non-numeric limit cleanly."""
+        result = await self.dispatcher.execute(
+            "search_past_conversations",
+            {"query": "machine learning", "limit": "non_numeric"},
+        )
+        self.assertIn("Error: Invalid limit", result)
+
+    async def test_search_past_conversations_with_empty_string_limit(self):
+        """Verify search_past_conversations defaults empty string limit cleanly."""
+        result = await self.dispatcher.execute(
+            "search_past_conversations",
+            {"query": "machine learning", "limit": ""},
+        )
+        self.assertIn("No past conversations found matching", result)
+
+    async def test_python_interpreter_with_null_or_invalid_timeout(self):
+        """Verify python_interpreter handles null and non-numeric timeout."""
+        res_null = await self.dispatcher.execute(
+            "python_interpreter",
+            {"code": "print(42)", "timeout": None},
+        )
+        self.assertIn("Exit Code: 0", res_null)
+        self.assertIn("42", res_null)
+
+        res_invalid = await self.dispatcher.execute(
+            "python_interpreter",
+            {"code": "print(42)", "timeout": "invalid"},
+        )
+        self.assertIn("Error: Invalid timeout", res_invalid)
+
+    async def test_read_file_with_null_or_invalid_max_lines(self):
+        """Verify read_file handles null and non-numeric max_lines."""
+        tmp = tempfile.NamedTemporaryFile("w+", delete=False)
+        try:
+            tmp.write("line 1\nline 2\n")
+            tmp.flush()
+
+            res_null = await self.dispatcher.execute(
+                "read_file",
+                {"file_path": tmp.name, "max_lines": None},
+            )
+            self.assertIn("line 1", res_null)
+
+            res_invalid = await self.dispatcher.execute(
+                "read_file",
+                {"file_path": tmp.name, "max_lines": "not_int"},
+            )
+            self.assertIn("Error: Invalid max_lines", res_invalid)
+        finally:
+            os.unlink(tmp.name)
+
+    async def test_terminal_tool_with_invalid_timeout(self):
+        """Verify run_terminal_command handles non-numeric timeout."""
+        result = await self.dispatcher.execute(
+            "run_terminal_command",
+            {"command": "echo hi", "timeout": "not_a_float"},
+        )
+        self.assertIn("Error: Invalid timeout", result)
+
+    async def test_web_search_with_invalid_max_results(self):
+        """Verify web_search handles non-numeric max_results."""
+        result = await self.dispatcher.execute(
+            "web_search",
+            {"query": "test", "max_results": "invalid"},
+        )
+        self.assertIn("Error: Invalid max_results", result)
+
+    async def test_fetch_web_page_with_invalid_max_chars(self):
+        """Verify fetch_web_page handles non-numeric max_chars."""
+        result = await self.dispatcher.execute(
+            "fetch_web_page",
+            {"url": "https://example.com", "max_chars": "invalid"},
+        )
+        self.assertIn("Error: Invalid max_chars", result)
+
+    async def test_dispatcher_top_level_exception_guard(self):
+        """Verify that unexpected exceptions in tool handlers do not escape execute()."""
+        with patch.object(self.assistant, "search_hybrid", side_effect=RuntimeError("Unexpected DB boom")):
+            result = await self.dispatcher.execute(
+                "search_past_conversations",
+                {"query": "test"},
+            )
+            self.assertIn("Error searching past conversations: Unexpected DB boom", result)
 
 
 if __name__ == "__main__":

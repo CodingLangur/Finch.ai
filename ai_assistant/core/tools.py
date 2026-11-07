@@ -346,6 +346,44 @@ ALL_AGENT_TOOLS: List[Dict[str, Any]] = (
 )
 
 
+def _safe_int(val: Any, default: int, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
+    """Safely coerce value to int with fallback and boundary checking.
+
+    If val is None or empty string, default is returned.
+    If conversion fails, ValueError is raised.
+    """
+    if val is None or val == "":
+        return default
+    try:
+        res = int(val)
+    except (ValueError, TypeError):
+        raise ValueError(f"Expected integer, got '{val}'.")
+    if min_val is not None and res < min_val:
+        res = min_val
+    if max_val is not None and res > max_val:
+        res = max_val
+    return res
+
+
+def _safe_float(val: Any, default: float, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
+    """Safely coerce value to float with fallback and boundary checking.
+
+    If val is None or empty string, default is returned.
+    If conversion fails, ValueError is raised.
+    """
+    if val is None or val == "":
+        return default
+    try:
+        res = float(val)
+    except (ValueError, TypeError):
+        raise ValueError(f"Expected number, got '{val}'.")
+    if min_val is not None and res < min_val:
+        res = min_val
+    if max_val is not None and res > max_val:
+        res = max_val
+    return res
+
+
 class ToolDispatcher:
     """Dispatches tool calls to Finch.ai storage engines and agent action executors."""
 
@@ -355,6 +393,13 @@ class ToolDispatcher:
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any] | str) -> str:
         """Execute a tool call and return formatted context string."""
+        try:
+            return await self._execute_internal(tool_name, arguments)
+        except Exception as e:
+            return f"Error executing tool '{tool_name}': {e}"
+
+    async def _execute_internal(self, tool_name: str, arguments: Dict[str, Any] | str) -> str:
+        """Internal dispatch for tool call execution."""
         if isinstance(arguments, str):
             try:
                 args = json.loads(arguments)
@@ -401,71 +446,89 @@ class ToolDispatcher:
 
         # 1. Past Conversation Search
         if tool_name == "search_past_conversations":
-            query = str(args.get("query", "")).strip()
-            limit = int(args.get("limit", 5))
+            query = str(args.get("query") or "").strip()
             if not query:
                 return "Error: Search query cannot be empty."
 
-            results = await self.assistant.search_hybrid(query=query, limit=limit)
-            if not results:
-                return f"No past conversations found matching '{query}'."
+            try:
+                limit = _safe_int(args.get("limit"), default=5, min_val=1)
+            except ValueError as e:
+                return f"Error: Invalid limit: {e}"
 
-            lines = [f"Found {len(results)} relevant past conversation sessions:"]
-            for r in results:
-                lines.append(f"\n- Session ID: {r.session_id}")
-                lines.append(f"  Title: {r.title}")
-                if r.summary:
-                    lines.append(f"  Summary: {r.summary}")
-                if r.matched_snippets:
-                    clean_snips = [
-                        s.replace("[MATCH]", "").replace("[/MATCH]", "").strip()
-                        for s in r.matched_snippets[:2]
-                    ]
-                    lines.append(f"  Snippet: {' | '.join(clean_snips)}")
-                if r.cosine_similarity is not None:
-                    lines.append(f"  Relevance: RRF={r.rrf_score:.4f}, Cosine Similarity={r.cosine_similarity*100:.1f}%")
+            try:
+                results = await self.assistant.search_hybrid(query=query, limit=limit)
+                if not results:
+                    return f"No past conversations found matching '{query}'."
 
-            lines.append("\nTip: To read full dialogue turns from any session above, call load_session_transcript(session_id).")
-            return "\n".join(lines)
+                lines = [f"Found {len(results)} relevant past conversation sessions:"]
+                for r in results:
+                    lines.append(f"\n- Session ID: {r.session_id}")
+                    lines.append(f"  Title: {r.title}")
+                    if r.summary:
+                        lines.append(f"  Summary: {r.summary}")
+                    if r.matched_snippets:
+                        clean_snips = [
+                            s.replace("[MATCH]", "").replace("[/MATCH]", "").strip()
+                            for s in r.matched_snippets[:2]
+                        ]
+                        lines.append(f"  Snippet: {' | '.join(clean_snips)}")
+                    if r.cosine_similarity is not None:
+                        lines.append(f"  Relevance: RRF={r.rrf_score:.4f}, Cosine Similarity={r.cosine_similarity*100:.1f}%")
+
+                lines.append("\nTip: To read full dialogue turns from any session above, call load_session_transcript(session_id).")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"Error searching past conversations: {e}"
 
         # 2. Session Transcript Loader
         elif tool_name == "load_session_transcript":
-            session_id = str(args.get("session_id", "")).strip()
+            session_id = str(args.get("session_id") or "").strip()
             if not session_id:
                 return "Error: session_id is required."
 
-            transcript = self.assistant.load_session_transcript(session_id=session_id)
-            if not transcript:
-                return f"Session '{session_id}' not found in database."
+            try:
+                transcript = self.assistant.load_session_transcript(session_id=session_id)
+                if not transcript:
+                    return f"Session '{session_id}' not found in database."
 
-            return transcript.formatted_transcript
+                return transcript.formatted_transcript
+            except Exception as e:
+                return f"Error loading transcript for session '{session_id}': {e}"
 
         # 3. Long-Term Fact Store Tools
         elif tool_name == "save_user_fact":
-            fact_text = str(args.get("fact", "")).strip()
-            category = str(args.get("category", "general")).strip()
+            fact_text = str(args.get("fact") or "").strip()
+            category = str(args.get("category") or "general").strip()
             if not fact_text:
                 return "Error: Fact content cannot be empty."
-            if hasattr(self.assistant, "add_user_fact"):
-                fact_id = self.assistant.add_user_fact(fact=fact_text, category=category)
-                return f"Fact successfully stored in long-term memory (ID: {fact_id}, Category: {category})."
-            return "Error: Fact store not available on assistant."
+            try:
+                if hasattr(self.assistant, "add_user_fact"):
+                    fact_id = self.assistant.add_user_fact(fact=fact_text, category=category)
+                    return f"Fact successfully stored in long-term memory (ID: {fact_id}, Category: {category})."
+                return "Error: Fact store not available on assistant."
+            except Exception as e:
+                return f"Error storing user fact: {e}"
 
         elif tool_name == "list_user_facts":
             cat_filter = args.get("category")
-            if hasattr(self.assistant, "list_user_facts"):
-                facts = self.assistant.list_user_facts(category=cat_filter)
-                if not facts:
-                    return "No long-term user facts found."
-                lines = [f"Found {len(facts)} user facts:"]
-                for f in facts:
-                    lines.append(f"- [ID {f['id']}] ({f['category']}): {f['fact']}")
-                return "\n".join(lines)
-            return "Error: Fact store not available on assistant."
+            if cat_filter is not None:
+                cat_filter = str(cat_filter).strip() or None
+            try:
+                if hasattr(self.assistant, "list_user_facts"):
+                    facts = self.assistant.list_user_facts(category=cat_filter)
+                    if not facts:
+                        return "No long-term user facts found."
+                    lines = [f"Found {len(facts)} user facts:"]
+                    for f in facts:
+                        lines.append(f"- [ID {f['id']}] ({f['category']}): {f['fact']}")
+                    return "\n".join(lines)
+                return "Error: Fact store not available on assistant."
+            except Exception as e:
+                return f"Error retrieving user facts: {e}"
 
         # 3. Terminal Command Execution
         elif tool_name == "run_terminal_command":
-            command = str(args.get("command", "")).strip()
+            command = str(args.get("command") or "").strip()
             if not command:
                 return "Error: command is required."
             cwd = args.get("cwd") or None
@@ -477,7 +540,10 @@ class ToolDispatcher:
                     return f"Error: '{cwd}' is a file, not a directory."
 
             default_timeout = getattr(getattr(self.assistant, "config", None), "terminal_timeout", 30.0)
-            timeout = float(args.get("timeout") or default_timeout)
+            try:
+                timeout = _safe_float(args.get("timeout"), default=default_timeout, min_val=0.1)
+            except ValueError as e:
+                return f"Error: Invalid timeout: {e}"
 
             try:
                 proc = await asyncio.create_subprocess_shell(
@@ -530,10 +596,13 @@ class ToolDispatcher:
 
         # 4. Python Interpreter
         elif tool_name == "python_interpreter":
-            code = str(args.get("code", "")).strip()
+            code = str(args.get("code") or "").strip()
             if not code:
                 return "Error: code is required."
-            timeout = float(args.get("timeout", 30))
+            try:
+                timeout = _safe_float(args.get("timeout"), default=30.0, min_val=0.1)
+            except ValueError as e:
+                return f"Error: Invalid timeout: {e}"
 
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -573,10 +642,13 @@ class ToolDispatcher:
 
         # 5. Read File
         elif tool_name == "read_file":
-            file_path = str(args.get("file_path", "")).strip()
+            file_path = str(args.get("file_path") or "").strip()
             if not file_path:
                 return "Error: file_path is required."
-            max_lines = int(args.get("max_lines", 500))
+            try:
+                max_lines = _safe_int(args.get("max_lines"), default=500, min_val=1)
+            except ValueError as e:
+                return f"Error: Invalid max_lines: {e}"
 
             try:
                 if not os.path.exists(file_path):
@@ -597,10 +669,10 @@ class ToolDispatcher:
 
         # 6. Write File
         elif tool_name == "write_file":
-            file_path = str(args.get("file_path", "")).strip()
+            file_path = str(args.get("file_path") or "").strip()
             if not file_path:
                 return "Error: file_path is required."
-            content = str(args.get("content", ""))
+            content = str(args.get("content") or "")
 
             try:
                 parent_dir = os.path.dirname(os.path.abspath(file_path))
@@ -614,7 +686,7 @@ class ToolDispatcher:
 
         # 7. List Directory
         elif tool_name == "list_directory":
-            dir_path = str(args.get("directory_path", ".")).strip() or "."
+            dir_path = str(args.get("directory_path") or ".").strip() or "."
 
             try:
                 if not os.path.exists(dir_path):
@@ -644,10 +716,13 @@ class ToolDispatcher:
 
         # 8. Web Search
         elif tool_name == "web_search":
-            query = str(args.get("query", "")).strip()
+            query = str(args.get("query") or "").strip()
             if not query:
                 return "Error: query is required."
-            max_results = int(args.get("max_results", 5))
+            try:
+                max_results = _safe_int(args.get("max_results"), default=5, min_val=1)
+            except ValueError as e:
+                return f"Error: Invalid max_results: {e}"
 
             try:
                 import httpx
@@ -680,12 +755,15 @@ class ToolDispatcher:
 
         # 9. Fetch Web Page
         elif tool_name == "fetch_web_page":
-            url = str(args.get("url", "")).strip()
+            url = str(args.get("url") or "").strip()
             if not url:
                 return "Error: url is required."
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
-            max_chars = int(args.get("max_chars", 5000))
+            try:
+                max_chars = _safe_int(args.get("max_chars"), default=5000, min_val=1)
+            except ValueError as e:
+                return f"Error: Invalid max_chars: {e}"
 
             try:
                 import httpx

@@ -105,6 +105,7 @@ class InteractiveCLI:
             prompt_continuation=prompt_continuation,
             enable_history_search=True,
         )
+        self._last_search_sessions: List[str] = []
 
     async def prompt_tool_confirmation(self, tool_name: str, args: Dict[str, Any]) -> bool:
         """Prompt user for interactive confirmation before executing a tool in 'ask' mode."""
@@ -191,7 +192,7 @@ class InteractiveCLI:
         table.add_row("/session", "Display metadata and stats for the active session")
         table.add_row("/search <query>", "Exact-term & keyword search across past messages (FTS5)")
         table.add_row("/hybrid <query>", "Semantic & Hybrid Search combining FTS5 and sqlite-vec (RRF)")
-        table.add_row("/transcript [id]", "View full dialogue transcript for an identified session")
+        table.add_row("/transcript [#|id]", "View full dialogue transcript by result number or session ID")
         table.add_row("/new [title]", "Start a fresh session and clear in-memory context")
         table.add_row("/provider [name] [key] [url]", "View current provider, switch (ollama|gemini|openai), or configure endpoint/key")
         table.add_row("/providers", "List all supported providers, endpoints, and statuses")
@@ -716,8 +717,9 @@ class InteractiveCLI:
         subcmd = parts[0].lower() if parts else ""
 
         if subcmd in ("md", "markdown"):
-            target_id = parts[1] if len(parts) > 1 and not parts[1].endswith(".md") else None
+            raw_target = parts[1] if len(parts) > 1 and not parts[1].endswith(".md") else None
             out_file = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 and parts[1].endswith(".md") else None)
+            target_id = self._resolve_target_session_id(raw_target)
             with self.console.status("[bold cyan]Exporting Markdown transcript...[/bold cyan]"):
                 try:
                     path = self.assistant.export_transcript_markdown(session_id=target_id, output_path=out_file)
@@ -731,8 +733,9 @@ class InteractiveCLI:
             return
 
         elif subcmd in ("html", "web"):
-            target_id = parts[1] if len(parts) > 1 and not parts[1].endswith(".html") else None
+            raw_target = parts[1] if len(parts) > 1 and not parts[1].endswith(".html") else None
             out_file = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 and parts[1].endswith(".html") else None)
+            target_id = self._resolve_target_session_id(raw_target)
             with self.console.status("[bold cyan]Exporting HTML transcript...[/bold cyan]"):
                 try:
                     path = self.assistant.export_transcript_html(session_id=target_id, output_path=out_file)
@@ -999,7 +1002,10 @@ class InteractiveCLI:
             self.console.print("[yellow]No archived sessions found in SQLite.[/yellow]\n")
             return
 
+        self._last_search_sessions = [s.id for s in sessions]
+
         table = Table(title=f"Archived Sessions (most recent {len(sessions)})", box=ROUNDED, header_style="bold cyan")
+        table.add_column("#", justify="center", style="bold yellow", width=4)
         table.add_column("Active", justify="center", width=6)
         table.add_column("Session ID", style="bold yellow")
         table.add_column("Title", style="bold white")
@@ -1007,7 +1013,7 @@ class InteractiveCLI:
         table.add_column("Created", style="dim", width=19)
         table.add_column("Summary Snippet", style="dim cyan")
 
-        for s in sessions:
+        for idx, s in enumerate(sessions, 1):
             is_active = s.id == self.assistant.current_session.id
             active_str = "[bold green]▶[/bold green]" if is_active else ""
             summary_snippet = (s.summary or "-").replace("\n", " ")
@@ -1016,6 +1022,7 @@ class InteractiveCLI:
             created_short = s.created_at[:19].replace("T", " ")
 
             table.add_row(
+                str(idx),
                 active_str,
                 f"[green]{s.id}[/green]" if is_active else s.id,
                 s.title,
@@ -1025,7 +1032,7 @@ class InteractiveCLI:
             )
 
         self.console.print(table)
-        self.console.print("[dim]Use [bold cyan]/session[/bold cyan] to inspect the current session.[/dim]\n")
+        self.console.print("[dim]Use [bold cyan]/transcript <# or session_id>[/bold cyan] to inspect full session dialogue (e.g. [bold cyan]/transcript 1[/bold cyan]).[/dim]\n")
 
     def handle_session_info_command(self) -> None:
         """Show detailed metadata for current session."""
@@ -1077,22 +1084,26 @@ class InteractiveCLI:
             self.console.print(f"[yellow]No matches found for '{query}'.[/yellow]\n")
             return
 
+        self._last_search_sessions = [r.session_id for r in results]
+
         table = Table(
             title=f"Search Results for '{query}' ({len(results)} matches)",
             box=ROUNDED,
             header_style="bold cyan",
         )
-        table.add_column("Session ID", style="cyan", width=16)
+        table.add_column("#", justify="center", style="bold yellow", width=4)
+        table.add_column("Session ID", style="cyan", min_width=18, no_wrap=True)
         table.add_column("Session Title", style="bold white", width=22)
         table.add_column("Role", justify="center", width=8)
         table.add_column("Timestamp", style="dim", width=19)
         table.add_column("Matched Snippet", style="white")
 
-        for r in results:
+        for idx, r in enumerate(results, 1):
             role_style = "green" if r.role.lower() == "user" else "magenta"
             time_short = r.timestamp[:19].replace("T", " ")
             clean_snippet = r.snippet.replace("[MATCH]", "[bold yellow]").replace("[/MATCH]", "[/bold yellow]")
             table.add_row(
+                str(idx),
                 r.session_id,
                 r.session_title,
                 f"[{role_style}]{r.role.upper()}[/{role_style}]",
@@ -1101,7 +1112,7 @@ class InteractiveCLI:
             )
 
         self.console.print(table)
-        self.console.print("[dim]Use [bold cyan]/transcript <session_id>[/bold cyan] to view full dialogue.[/dim]\n")
+        self.console.print("[dim]Use [bold cyan]/transcript <# or session_id>[/bold cyan] to view full dialogue (e.g. [bold cyan]/transcript 1[/bold cyan]).[/dim]\n")
 
     async def handle_hybrid_command(self, query: str) -> None:
         """Execute Hybrid Search combining FTS5 lexical matching and sqlite-vec embeddings via RRF."""
@@ -1116,19 +1127,22 @@ class InteractiveCLI:
             self.console.print(f"[yellow]No hybrid matches found for '{query}'.[/yellow]\n")
             return
 
+        self._last_search_sessions = [r.session_id for r in results]
+
         table = Table(
             title=f"Hybrid Search Results for '{query}' (RRF Fusion, {len(results)} matches)",
             box=ROUNDED,
             header_style="bold cyan",
         )
-        table.add_column("Session ID", style="cyan", width=16)
+        table.add_column("#", justify="center", style="bold yellow", width=4)
+        table.add_column("Session ID", style="cyan", min_width=18, no_wrap=True)
         table.add_column("Session Title", style="bold white", width=22)
         table.add_column("RRF Score", justify="right", style="bold green", width=11)
         table.add_column("Lex Rank", justify="center", width=10)
         table.add_column("Sem Sim", justify="right", width=10)
         table.add_column("Summary / Snippet", style="white")
 
-        for r in results:
+        for idx, r in enumerate(results, 1):
             lex_str = f"#{r.lexical_rank}" if r.lexical_rank is not None else "[dim]-[/dim]"
             sim_str = f"{r.cosine_similarity * 100:.1f}%" if r.cosine_similarity is not None else "[dim]-[/dim]"
             preview = ""
@@ -1144,6 +1158,7 @@ class InteractiveCLI:
                 preview = preview[:87] + "..."
 
             table.add_row(
+                str(idx),
                 r.session_id,
                 r.title,
                 f"{r.rrf_score:.5f}",
@@ -1153,14 +1168,63 @@ class InteractiveCLI:
             )
 
         self.console.print(table)
-        self.console.print("[dim]Use [bold cyan]/transcript <session_id>[/bold cyan] to inspect full session dialogue.[/dim]\n")
+        self.console.print("[dim]Use [bold cyan]/transcript <# or session_id>[/bold cyan] to inspect full session dialogue (e.g. [bold cyan]/transcript 1[/bold cyan]).[/dim]\n")
+
+    def _resolve_target_session_id(self, raw_target: Optional[str]) -> Optional[str]:
+        """Resolve a session identifier or numeric search index to a concrete session ID."""
+        if not raw_target:
+            return None
+        cleaned = raw_target.lstrip("#[").rstrip("].").strip()
+        if cleaned.isdigit():
+            idx = int(cleaned)
+            last_sessions = getattr(self, "_last_search_sessions", [])
+            if 1 <= idx <= len(last_sessions):
+                return last_sessions[idx - 1]
+        return raw_target
 
     def handle_transcript_command(self, session_id: str) -> None:
-        """Display full dialogue transcript for an identified session."""
-        target_id = session_id.strip() or self.assistant.current_session.id
+        """Display full dialogue transcript for an identified session or search result number."""
+        raw_target = (session_id or "").strip()
+        if not raw_target:
+            target_id = self.assistant.current_session.id
+        else:
+            cleaned_num = raw_target.lstrip("#[").rstrip("].").strip()
+            is_negative = cleaned_num.startswith("-") and cleaned_num[1:].isdigit()
+            if cleaned_num.isdigit() or is_negative:
+                idx = int(cleaned_num)
+                last_sessions = getattr(self, "_last_search_sessions", [])
+                if not last_sessions:
+                    self.console.print(
+                        "[bold red]No recent search or session results found.[/bold red] "
+                        "[yellow]Please run /search, /hybrid, or /sessions first, or provide a full session ID.[/yellow]\n"
+                    )
+                    return
+                if 1 <= idx <= len(last_sessions):
+                    target_id = last_sessions[idx - 1]
+                else:
+                    self.console.print(
+                        f"[bold red]Result index '{idx}' out of range.[/bold red] "
+                        f"[yellow]Must be between 1 and {len(last_sessions)}.[/yellow]\n"
+                    )
+                    return
+            else:
+                target_id = raw_target
+
         transcript = self.assistant.load_session_transcript(session_id=target_id)
         if not transcript:
-            self.console.print(f"[bold red]Session '{target_id}' not found.[/bold red]\n")
+            matches = []
+            if hasattr(self.assistant, "archive") and hasattr(self.assistant.archive, "get_matching_session_ids"):
+                matches = self.assistant.archive.get_matching_session_ids(target_id)
+
+            if len(matches) > 1:
+                match_list = "\n".join(f"  • [cyan]{m}[/cyan]" for m in matches)
+                self.console.print(
+                    f"[bold yellow]Prefix '{escape(target_id)}' matches multiple sessions:[/bold yellow]\n"
+                    f"{match_list}\n"
+                    f"[dim]Please specify more characters or use the result index number (e.g. /transcript 1).[/dim]\n"
+                )
+            else:
+                self.console.print(f"[bold red]Session '{escape(target_id)}' not found.[/bold red]\n")
             return
 
         self.console.print(

@@ -98,9 +98,126 @@ class TestCLIProviderCommands(unittest.IsolatedAsyncioTestCase):
         self.cli.handle_transcript_command(sess.id)
         self.cli.console.print.assert_called()
 
+    async def test_handle_transcript_command_by_number(self):
+        sess = self.assistant.archive.create_session(title="Numbered Session")
+        self.assistant.archive.add_message(
+            session_id=sess.id,
+            role="user",
+            content="Question for numbered selection",
+        )
+        self.cli._last_search_sessions = [sess.id]
+
+        # Test both "1" and "#1"
+        self.cli.handle_transcript_command("1")
+        self.cli.console.print.assert_called()
+
+        self.cli.handle_transcript_command("#1")
+        self.cli.console.print.assert_called()
+
+    async def test_handle_transcript_command_number_out_of_range(self):
+        self.cli._last_search_sessions = ["sess_sample_1", "sess_sample_2"]
+        self.cli.handle_transcript_command("5")
+        args, _ = self.cli.console.print.call_args
+        self.assertIn("out of range", args[0])
+
+    async def test_handle_transcript_command_number_no_prior_results(self):
+        self.cli._last_search_sessions = []
+        self.cli.handle_transcript_command("1")
+        args, _ = self.cli.console.print.call_args
+        self.assertIn("No recent search or session results found", args[0])
+
+    async def test_handle_transcript_command_prefix_resolution(self):
+        sess = self.assistant.archive.create_session(title="Prefix Resolution Session")
+        self.assistant.archive.add_message(
+            session_id=sess.id,
+            role="user",
+            content="Prefix match testing",
+        )
+        # Call with partial ID (without full hex)
+        partial_id = sess.id[:10]
+        self.cli.handle_transcript_command(partial_id)
+        self.cli.console.print.assert_called()
+
+        # Call with truncated ellipsis (e.g. sess_xxxx…)
+        truncated_ellipsis = sess.id[:12] + "…"
+        self.cli.handle_transcript_command(truncated_ellipsis)
+        self.cli.console.print.assert_called()
+
+    async def test_handle_sessions_command_populates_last_search_sessions(self):
+        sess = self.assistant.archive.create_session(title="Listed Session")
+        self.cli.handle_sessions_command("")
+        self.assertIn(sess.id, self.cli._last_search_sessions)
+
     async def test_handle_transcript_command_not_found(self):
         self.cli.handle_transcript_command("nonexistent_session_id")
+        args, _ = self.cli.console.print.call_args
+        self.assertIn("not found", args[0])
+
+    async def test_handle_transcript_command_edge_case_zero_and_negative(self):
+        self.cli._last_search_sessions = ["sess_a", "sess_b"]
+        # Zero
+        self.cli.handle_transcript_command("0")
+        args, _ = self.cli.console.print.call_args
+        self.assertIn("out of range", args[0])
+
+        # Negative number
+        self.cli.handle_transcript_command("-1")
+        args, _ = self.cli.console.print.call_args
+        self.assertIn("out of range", args[0])
+
+    async def test_handle_transcript_command_edge_case_formatting(self):
+        sess = self.assistant.archive.create_session(title="Formatted Selection Session")
+        self.assistant.archive.add_message(
+            session_id=sess.id,
+            role="user",
+            content="Testing brackets and dot formatting",
+        )
+        self.cli._last_search_sessions = [sess.id]
+
+        # Bracket format: "[1]"
+        self.cli.handle_transcript_command("[1]")
         self.cli.console.print.assert_called()
+
+        # Dot format: "1."
+        self.cli.handle_transcript_command("1.")
+        self.cli.console.print.assert_called()
+
+    async def test_handle_transcript_command_ambiguous_prefix(self):
+        sess1 = self.assistant.archive.create_session(session_id="sess_ambig_alpha1", title="Ambig 1")
+        sess2 = self.assistant.archive.create_session(session_id="sess_ambig_alpha2", title="Ambig 2")
+        self.assistant.archive.add_message(session_id=sess1.id, role="user", content="msg 1")
+        self.assistant.archive.add_message(session_id=sess2.id, role="user", content="msg 2")
+
+        # Query with ambiguous prefix
+        self.cli.handle_transcript_command("sess_ambig_alpha")
+        args, _ = self.cli.console.print.call_args
+        self.assertIn("matches multiple sessions", args[0])
+        self.assertIn("sess_ambig_alpha1", args[0])
+        self.assertIn("sess_ambig_alpha2", args[0])
+
+    async def test_handle_export_command_with_numeric_index(self):
+        sess = self.assistant.archive.create_session(title="Export Numbered Session")
+        self.assistant.archive.add_message(
+            session_id=sess.id,
+            role="user",
+            content="Content to export",
+        )
+        self.cli._last_search_sessions = [sess.id]
+
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            self.cli.handle_export_command(f"md 1 {tmp_path}")
+            self.assertTrue(os.path.exists(tmp_path))
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("Content to export", content)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     async def test_handle_input_transcript_slash_command(self):
         handled = await self.cli.handle_input("/transcript")

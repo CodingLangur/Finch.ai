@@ -261,7 +261,10 @@ class SQLiteArchive:
         )
 
     def get_session(self, session_id: str) -> Optional[SessionRecord]:
-        """Fetch session by ID with message count."""
+        """Fetch session by ID with message count, with fallback prefix matching."""
+        clean_id = (session_id or "").strip()
+        if not clean_id:
+            return None
         with self._lock:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -273,9 +276,43 @@ class SQLiteArchive:
                 WHERE s.id = ?
                 GROUP BY s.id
                 """,
-                (session_id,),
+                (clean_id,),
             )
             row = cursor.fetchone()
+            if not row:
+                # Strip trailing ellipsis or punctuation if copied from truncated display
+                target = clean_id.rstrip("…").rstrip(".")
+                if not target.startswith("sess_"):
+                    cursor.execute(
+                        """
+                        SELECT s.*, COUNT(m.id) as msg_count
+                        FROM sessions s
+                        LEFT JOIN messages m ON s.id = m.session_id
+                        WHERE s.id = ?
+                        GROUP BY s.id
+                        """,
+                        (f"sess_{target}",),
+                    )
+                    row = cursor.fetchone()
+
+                if not row and len(target) >= 4:
+                    prefix_cand = target if target.startswith("sess_") else f"sess_{target}"
+                    escaped_prefix = prefix_cand.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    cursor.execute(
+                        """
+                        SELECT s.*, COUNT(m.id) as msg_count
+                        FROM sessions s
+                        LEFT JOIN messages m ON s.id = m.session_id
+                        WHERE s.id LIKE ? || '%' ESCAPE '\\'
+                        GROUP BY s.id
+                        LIMIT 2
+                        """,
+                        (escaped_prefix,),
+                    )
+                    matches = cursor.fetchall()
+                    if len(matches) == 1:
+                        row = matches[0]
+
             if not row:
                 return None
 
@@ -295,6 +332,26 @@ class SQLiteArchive:
                 metadata=meta,
                 message_count=row["msg_count"],
             )
+
+    def get_matching_session_ids(self, prefix: str, limit: int = 5) -> List[str]:
+        """Find session IDs matching a given prefix or partial ID."""
+        clean = (prefix or "").strip().rstrip("…").rstrip(".")
+        if not clean:
+            return []
+        prefix_cand = clean if clean.startswith("sess_") else f"sess_{clean}"
+        escaped = prefix_cand.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            conn = self._get_connection()
+            rows = conn.execute(
+                """
+                SELECT id FROM sessions
+                WHERE id = ? OR id LIKE ? || '%' ESCAPE '\\'
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (clean, escaped, limit),
+            ).fetchall()
+            return [r["id"] for r in rows]
 
     def list_sessions(self, limit: int = 50, offset: int = 0) -> List[SessionRecord]:
         """List sessions ordered by most recently updated."""
@@ -863,7 +920,7 @@ class SQLiteArchive:
             if not session:
                 return None
 
-            messages = self.get_messages(session_id, include_system=include_system)
+            messages = self.get_messages(session.id, include_system=include_system)
             turns = []
             formatted_lines = [
                 f"=== Session Transcript: {session.title} ({session.id}) ===",

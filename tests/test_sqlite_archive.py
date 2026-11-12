@@ -146,6 +146,58 @@ class TestSQLiteArchive(unittest.TestCase):
         self.assertIn("s2", ids)
         self.assertIn("s3", ids)
 
+    def test_prefix_and_ellipsis_resolution(self):
+        """Test resolving session by prefix, without sess_ prefix, or with ellipsis."""
+        s = self.archive.create_session(session_id="sess_7ca3dd5482ab", title="Prefix Test Session")
+        self.archive.add_message(s.id, role="user", content="Hello prefix test")
+
+        # Exact match
+        self.assertIsNotNone(self.archive.get_session("sess_7ca3dd5482ab"))
+
+        # Truncated with ellipsis
+        sess_ellipsis = self.archive.get_session("sess_7ca3dd5482…")
+        self.assertIsNotNone(sess_ellipsis)
+        self.assertEqual(sess_ellipsis.id, "sess_7ca3dd5482ab")
+
+        # Prefix without sess_
+        sess_no_prefix = self.archive.get_session("7ca3dd5482ab")
+        self.assertIsNotNone(sess_no_prefix)
+        self.assertEqual(sess_no_prefix.id, "sess_7ca3dd5482ab")
+
+        # Short prefix (e.g. 8 chars)
+        sess_short = self.archive.get_session("sess_7ca3")
+        self.assertIsNotNone(sess_short)
+        self.assertEqual(sess_short.id, "sess_7ca3dd5482ab")
+
+        # Transcript resolution with prefix
+        transcript = self.archive.get_session_transcript("sess_7ca3dd5482…")
+        self.assertIsNotNone(transcript)
+        self.assertEqual(len(transcript["turns"]), 1)
+
+    def test_wildcard_escaping_in_prefix(self):
+        """Test that underscores and percent signs in session IDs are escaped properly in LIKE queries."""
+        self.archive.create_session(session_id="sess_foo_bar", title="Underscore Session")
+        self.archive.create_session(session_id="sess_fooxbar", title="Other Session")
+
+        # "sess_foo_" should match "sess_foo_bar" but NOT "sess_fooxbar"
+        sess = self.archive.get_session("sess_foo_")
+        self.assertIsNotNone(sess)
+        self.assertEqual(sess.id, "sess_foo_bar")
+
+    def test_get_matching_session_ids(self):
+        """Test finding multiple matching session IDs for ambiguity checking."""
+        self.archive.create_session(session_id="sess_multi_1", title="Multi 1")
+        self.archive.create_session(session_id="sess_multi_2", title="Multi 2")
+
+        matches = self.archive.get_matching_session_ids("sess_multi")
+        self.assertEqual(len(matches), 2)
+        self.assertIn("sess_multi_1", matches)
+        self.assertIn("sess_multi_2", matches)
+
+        # Empty / nonexistent
+        self.assertEqual(self.archive.get_matching_session_ids(""), [])
+        self.assertEqual(self.archive.get_matching_session_ids("sess_none_exist"), [])
+
     def test_file_based_persistence(self):
         """Test persisting data to a real file on disk, re-opening, and reading back."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:

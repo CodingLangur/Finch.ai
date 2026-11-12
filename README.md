@@ -153,6 +153,13 @@ python -m finch.cli -q "Analyze the current workspace architecture."
 
 *(Note: `python main.py` remains available as an alias.)*
 
+#### Conversation History Search & Ergonomic Dialogue Inspection
+Finch makes it effortless to search past conversations and inspect full dialogue transcripts without needing to copy lengthy session IDs:
+- **Numbered Search Results**: Commands like `/search <term>`, `/hybrid <query>`, and `/sessions [limit]` render an indexed `#` column (`1`, `2`, `3`...).
+- **Instant Transcript Loading**: Simply type `/transcript <#>` (e.g. `/transcript 1` or `/transcript #1`) to view the complete dialogue turns of that session.
+- **Smart Prefix & Ellipsis Resolution**: Even when typing session IDs directly, partial prefixes (e.g. `/transcript sess_7ca3dd` or `/transcript 7ca3dd`) or clipped IDs with ellipsis (e.g. `sess_7ca3dd5482…`) resolve automatically. If a prefix is ambiguous, the CLI displays all matching sessions to help you disambiguate.
+- **Indexed Exports**: Export transcripts to Markdown or HTML using the result index: `/export md 1` or `/export html 1`.
+
 ---
 
 ## Multi-Provider LLM Inference & Dynamic Switching
@@ -228,8 +235,8 @@ Inside an active CLI session, use slash commands to inspect state, adjust guardr
 | **`/facts`** | `/facts [category]` | List all stored user facts and knowledge categorized by domain. |
 | **`/hybrid`** | `/hybrid <query>` | Execute semantic + lexical (FTS5 + `sqlite-vec` RRF) search across history. |
 | **`/search`** | `/search <query>` | Fast BM25 exact lexical search across past conversation turns. |
-| **`/transcript`** | `/transcript [id]` | View full dialogue transcript for an identified past session or current active session. |
-| **`/sessions`** | `/sessions [limit]` | List archived conversation sessions with message counts, summaries, and timestamps. |
+| **`/transcript`** | `/transcript [#\|id]` | View full dialogue transcript by search result index (e.g. `/transcript 1`) or session ID/prefix. |
+| **`/sessions`** | `/sessions [limit]` | List archived conversation sessions with indexed `#` selection numbers, message counts, summaries, and timestamps. |
 | **`/storage`** | `/storage` | Inspect SQLite database footprint, message counts, and `zstd` compression stats. |
 | **`/vacuum`** | `/vacuum` | Perform database maintenance, WAL checkpointing, and page defragmentation. |
 | **`/timeout`** | `/timeout [seconds]` | Inspect or update LLM inference timeout (e.g. `/timeout 360` for heavy local CPU models). |
@@ -240,7 +247,7 @@ Inside an active CLI session, use slash commands to inspect state, adjust guardr
 | **`/provider`** | `/provider [name] [key] [url]` | Inspect current provider, dynamically switch runtime (`ollama\|gemini\|openai`), or configure endpoint/key. |
 | **`/providers`** | `/providers` | Table of all configured inference providers (Ollama, Gemini, OpenAI-Compatible), endpoints, and health status. |
 | **`/models`** | `/models [provider\|all]` / `/use <model>` | View models for current, specific (`gemini\|ollama\|openai`), or all providers, or switch active model. |
-| **`/export`** | `/export [backup\|md\|html\|hermes] [path]` | Export backup zip, Markdown/HTML dialogue transcript, or Hermes Agent state. |
+| **`/export`** | `/export [backup\|md\|html\|hermes] [#\|id] [path]` | Export backup zip, Markdown/HTML dialogue transcript (accepts result index `#` or session ID), or Hermes Agent state. |
 | **`/help`** | `/help` | Print the full interactive command reference manual. |
 
 </details>
